@@ -104,6 +104,10 @@ def evaluate(params, ntrials, seed, video_logdir=None):
                 "state": List, 
                 "action_plan": List
             }
+        edit_dist (float): Float in range [0,1] representing the editing 
+        distance MILP had to traverse in order to make ``params`` generate 
+        a valid environment. 0 if ``params`` is already valid. 1 if all 
+        movable objects had to be moved across the entire table.
     """
     np.random.seed(seed)
     openpi_client = _websocket_client_policy.WebsocketClientPolicy(host, port)
@@ -213,19 +217,25 @@ def evaluate(params, ntrials, seed, video_logdir=None):
 
     openpi_client._ws.close()
 
-    return entropy, spread, similarity, np.array(trajectories)
+    edit_dist = np.linalg.norm(env.env.params - params)
+    num_movable = len(env.env.objects_dict) / 2
+    edit_dist /= (num_movable*np.linalg.norm(2*env.env.table_bounds))
+
+    return entropy, spread, similarity, np.array(trajectories), edit_dist
 
 # def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
 #     objs = []
 #     meas = []
 #     trajs = []
+#     edit_dists = []
 #     for sol_id, sol in enumerate(params):
-#         entropy, spread, similarity, trajectoris = evaluate(sol, ntrials, seed+sol_id, video_logdir)
+#         entropy, spread, similarity, trajectoris, ed = evaluate(sol, ntrials, seed+sol_id, video_logdir)
 #         objs.append(entropy)
 #         meas.append([spread, similarity])
 #         trajs.append(trajectoris)
+#         edit_dists.append(ed)
     
-#     return np.array(objs), np.array(meas), np.array(trajs)
+#     return np.array(objs), np.array(meas), np.array(trajs), np.array(edit_dists)
 
 def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
     """Parallelized version of :func:`evaluate`.
@@ -245,6 +255,8 @@ def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
             Spread and similarity of environments created from ``params``.
         trajectories (np.ndarray): Array of shape (batch_size, ntrials). 
             Rollout trajectories.
+        edit_dist (float): Array of shape (batch_size,). Each entry is a float 
+            in range [0,1] representing normalized MILP editing distance.
     """
     batch_size = params.shape[0]
     nworkers = len(client.scheduler_info()['workers'])
@@ -266,15 +278,16 @@ def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
     ]
     results = client.gather(futures)
 
-    objs, meas, trajs = [], [], []
+    objs, meas, trajs, edit_dists = [], [], [], []
 
     # Process the results.
-    for entropy, spread, similarity, trajectoris in results:
+    for entropy, spread, similarity, trajectoris, ed in results:
         objs.append(entropy)
         meas.append([spread, similarity])
         trajs.append(trajectoris)
+        edit_dists.append(ed)
 
-    return np.array(objs), np.array(meas), np.array(trajs)
+    return np.array(objs), np.array(meas), np.array(trajs), np.array(edit_dists)
 
 def save_heatmap(archive, heatmap_path):
     """Saves a heatmap of the archive to the given path.
@@ -298,7 +311,7 @@ def main(
     seed=42,
     outdir="test_logs",
     reload_from=None,
-    log_every=10,
+    log_every=1,
 ):
     logdir = Path(outdir)
     logdir.mkdir(exist_ok=True)
@@ -375,8 +388,10 @@ def main(
     end = start + iterations
     for i in range(start, end):
         solutions = scheduler.ask()
-        objectives, measures, trajectories = evaluate_parallel(client=client, params=solutions, ntrials=num_trials_per_sol, seed=seed, video_logdir=None)
-        scheduler.tell(objectives, measures, trajectories=trajectories)
+        objectives, measures, trajectories, edit_dists = evaluate_parallel(client=client, params=solutions, ntrials=num_trials_per_sol, seed=seed, video_logdir=None)
+        
+        # Penalize objective with MILP editing distance if there is any
+        scheduler.tell(np.clip(objectives-edit_dists, a_min=0, a_max=None), measures, trajectories=trajectories)
 
         print(
             f"\n------------------ Iteration{i} ------------------\n"

@@ -89,7 +89,7 @@ def host_interactive_archive(archive, port=8050):
             print(
                 f'Recorded objective: {data["objective"]}; Recorded measures: {data["measures"]}'
             )
-            evaluate(params=[data["solution"]], ntrials=5, seed=42, video_logdir='interactive_vids')
+            evaluate(params=data["solution"], ntrials=5, seed=42, video_logdir='interactive_vids')
         else:
             print("Archive cell not occupied")
 
