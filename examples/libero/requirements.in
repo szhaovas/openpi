@@ -14,3 +14,4 @@ ribs==0.7.1
 fire
 shapely
 dask[distributed]
+dash

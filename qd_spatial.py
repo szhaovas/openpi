@@ -326,10 +326,13 @@ def main(
         #       cookies_1_x, cookies_1_y,
         #       glazed_rim_porcelain_ramekin_1_x,
         #       glazed_rim_porcelain_ramekin_1_y,
-        #       plate_1_x, plate_1_y
+        #       plate_1_x, plate_1_y,
+        #       light_x, light_y, light_z
+        #       camera_x, camera_y, camera_z,
+        #       table_r, table_g, table_b
         #   ]
         main_archive = GridArchive(
-            solution_dim=10,
+            solution_dim=19,
             dims=archive_resolution,
             ranges=[(0, 1)] * 2,
             # learning_rate=0.1,
@@ -340,7 +343,7 @@ def main(
             }
         )
         passive_archive = GridArchive(
-            solution_dim=10,
+            solution_dim=19,
             dims=archive_resolution,
             ranges=[(0, 1)] * 2,
             seed=seed,
@@ -353,7 +356,7 @@ def main(
             EvolutionStrategyEmitter(
                 archive=main_archive,
                 # Range centers copied from BDDL file
-                x0=[-0.18, 0.32, 0.13, -0.07, 0.07, 0.03, -0.20, 0.20, 0.06, 0.20],
+                x0=[-0.18, 0.32, 0.13, -0.07, 0.07, 0.03, -0.20, 0.20, 0.06, 0.20, 1, 1, 4, 0.66, 0, 1.61, 0.5, 0.5, 0.5],
                 sigma0=0.02,
                 # TODO: Define bounds if we want to stay close to the original BDDL
                 bounds=None,
