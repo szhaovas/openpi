@@ -1,7 +1,7 @@
-from collections.abc import Sequence
 import logging
 import pathlib
 import time
+from collections.abc import Sequence
 from typing import Any, TypeAlias
 
 import flax
@@ -48,9 +48,11 @@ class Policy(BasePolicy):
 
         start_time = time.monotonic()
         self._rng, sample_rng = jax.random.split(self._rng)
+        actions, embeddings = self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs)
         outputs = {
             "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs),
+            "actions": actions,
+            "embeddings": embeddings
         }
         # Unbatch and convert to np.ndarray.        # Unbatch and convert to np.ndarray.
         outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
@@ -66,7 +68,9 @@ class Policy(BasePolicy):
     def metadata(self) -> dict[str, Any]:
         return self._metadata
 
-
+# TODO(Shihan): May want to modify this to save only policy embeddings
+#   Also, if we are only saving embeddings, it might be better to save in .npy 
+#   instead of pickle (.npy should be more space-efficient).
 class PolicyRecorder(_base_policy.BasePolicy):
     """Records the policy's behavior to disk."""
 
