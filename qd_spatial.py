@@ -4,6 +4,8 @@ import datetime
 import math
 import pickle as pkl
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -37,6 +39,25 @@ num_steps_wait = 10
 host = "0.0.0.0"
 port = 8000
 replan_steps = 5
+
+@dataclass
+class Trajectory(Mapping):
+    prompt: str
+    success: bool = False
+    image: list[np.ndarray] = []
+    wrist_image: list[np.ndarray] = []
+    state: list[np.ndarray] = []
+    # TODO: store actions and policy embeddings(?)
+    # action_plan: list[np.ndarray] = []
+
+    def __getitem__(self, key): 
+        return getattr(self, key)
+    
+    def __iter__(self): 
+        return iter(["prompt", "image", "wrist_image", "state"])
+    
+    def __len__(self):
+        return 4
 
 def _quat2axisangle(quat):
     """
@@ -136,21 +157,14 @@ def evaluate(params, ntrials, seed, video_logdir=None):
     # action since actions might change objects' locations
     spread, similarity = env.env.compute_spread_similarity()
 
-    trajectories = []
+    trajectories: list[Trajectory] = []
     # Get success rates by running openpi on env
     success_rate = 0
     for trial_id in range(ntrials):
         obs = env.reset()
         action_plan = collections.deque()
 
-        new_trajectory = {
-            "success": False,
-            "prompt": env.language_instruction,
-            "image": [],
-            "wrist_image": [],
-            "state": [],
-            "action_plan": []
-        }
+        new_trajectory = Trajectory(prompt=env.language_instruction)
         for t in range(max_steps + num_steps_wait):
             try:
                 if t < num_steps_wait:
@@ -182,17 +196,17 @@ def evaluate(params, ntrials, seed, video_logdir=None):
                     action_plan.extend(action_chunk[: replan_steps])
 
                     # store in trajectory list
-                    new_trajectory["image"].append(img)
-                    new_trajectory["wrist_image"].append(wrist_img)
-                    new_trajectory["state"].append(element["observation/state"]) 
-                    new_trajectory["action_plan"].append(list(action_plan)) # (?) is this correct
+                    new_trajectory.image.append(img)
+                    new_trajectory.wrist_image.append(wrist_img)
+                    new_trajectory.state.append(element["observation/state"]) 
+                    # new_trajectory.action_plan.append(list(action_plan)) # (?) is this correct
 
                 action = action_plan.popleft()
 
                 obs, reward, done, info = env.step(action.tolist())
                 if done:
                     success_rate += 1 / ntrials
-                    new_trajectory['success'] = True
+                    new_trajectory.success = True
                     break
 
             except Exception as e:
@@ -201,12 +215,12 @@ def evaluate(params, ntrials, seed, video_logdir=None):
                 return 1e-6, 0, 0, None
 
         trajectories.append(new_trajectory)
-        print(f"\t trial{trial_id}: {'success' if new_trajectory['success'] else 'fail'}")
+        print(f"\t trial{trial_id}: {'success' if new_trajectory.success else 'fail'}")
         
         if video_logdir is not None:
             imageio.mimwrite(
-                sol_logdir / f"trial{trial_id}_{'success' if new_trajectory['success'] else 'fail'}.mp4",
-                [np.asarray(x) for x in new_trajectory["image"]],
+                sol_logdir / f"trial{trial_id}_{'success' if new_trajectory.success else 'fail'}.mp4",
+                [np.asarray(x) for x in new_trajectory.image],
                 fps=10,
             )
             
