@@ -4,6 +4,8 @@ import datetime
 import math
 import pickle as pkl
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -11,6 +13,7 @@ import fire
 import imageio
 import matplotlib.pyplot as plt
 import numpy as np
+from dask.distributed import Client, LocalCluster
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from openpi_client import websocket_client_policy as _websocket_client_policy
@@ -35,8 +38,26 @@ max_steps = 220
 num_steps_wait = 10
 host = "0.0.0.0"
 port = 8000
-client = _websocket_client_policy.WebsocketClientPolicy(host, port)
 replan_steps = 5
+
+@dataclass
+class Trajectory(Mapping):
+    prompt: str
+    success: bool = False
+    image: list[np.ndarray] = []
+    wrist_image: list[np.ndarray] = []
+    state: list[np.ndarray] = []
+    # TODO: store actions and policy embeddings(?)
+    # action_plan: list[np.ndarray] = []
+
+    def __getitem__(self, key): 
+        return getattr(self, key)
+    
+    def __iter__(self): 
+        return iter(["prompt", "image", "wrist_image", "state"])
+    
+    def __len__(self):
+        return 4
 
 def _quat2axisangle(quat):
     """
@@ -74,123 +95,213 @@ def _extract_scheduler_itr(filename):
     return None
 
 def evaluate(params, ntrials, seed, video_logdir=None):
-    """Evaluates params by creating LIBERO environments and computing
+    """Evaluates param by creating LIBERO environments and computing
     objective and measure values from the environments' features and VLA
     rollout.
 
     Args:
-        params (array-like): Array of shape (batch_size, solution_dim)
-            containing params to be evaluated.
+        params (np.ndarray): Array of shape (solution_dim,) containing a single 
+            solution to be evaluated.
         ntrials (int): Number of rollouts for each solution.
         seed (int): Seed.
         video_logdir (str): Folder for saving rollout videos. If None no video 
             is saved.
 
     Return:
-        objective (np.ndarray): Array of shape (batch_size,) containing VLA's
-            success rates on environments created from each row of ``params``.
-            Invalid rows get np.nan.
-        measures (np.ndarray): Array of shape (batch_size, measure_dim)
-            containing measure values computed from the environments' features.
-            Invalid rows get [np.nan] * measure_dim.
+        objective (float): Entropy of VLA's success rate on the environment 
+            created from ``params``.
+        spread (float): In the environment created from ``params``, how well do 
+            objects cover the table.
+        similarity (float): In the environment created from ``params``, how 
+            tightly are objects clustered.
+        trajectories (np.ndarray): Array of shape (ntrials,) containing all 
+            rollout trajectories. Each rollout trajectory is a dictionary of 
+            the following format:
+            {
+                "success": bool, 
+                "prompt": str, 
+                "image": List, 
+                "wrist_image": List, 
+                "state": List, 
+                "action_plan": List
+            }
+        edit_dist (float): Float in range [0,1] representing the editing 
+        distance MILP had to traverse in order to make ``params`` generate 
+        a valid environment. 0 if ``params`` is already valid. 1 if all 
+        movable objects had to be moved across the entire table.
     """
-    # NOTE: Ideally this should be parallelized, but we may have to evaluate
-    # solutions one at a time due to VLA's high GPU memory requirement.
     np.random.seed(seed)
+    openpi_client = _websocket_client_policy.WebsocketClientPolicy(host, port)
 
-    objectives = []
-    measures = []
-    for sol_id, sol in enumerate(params):
-        env = TASK_ENV(params=sol)
+    env = TASK_ENV(
+        params=params, 
+        repair_env=True, 
+        repair_config={
+            'time_limit':1500, 
+            'seed':seed
+        }
+    )
 
-        env.seed(seed)
+    env.seed(seed)
+    obs = env.reset()
+    if obs is None:
+        # TODO: How to handle solutions that fail to evaluate
+        return 1e-6, 0, 0, None
+
+    if video_logdir is not None:
+        # ID each sol with datetime to prevent overwriting
+        sol_logdir = Path(video_logdir) / f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        sol_logdir.mkdir(parents=True)
+    
+    # compute_spread_similarity must be called at the start before any 
+    # action since actions might change objects' locations
+    spread, similarity = env.env.compute_spread_similarity()
+
+    trajectories: list[Trajectory] = []
+    # Get success rates by running openpi on env
+    success_rate = 0
+    for trial_id in range(ntrials):
         obs = env.reset()
-        if obs is None:
-            # TODO: How to handle solutions that fail to generate
-            objectives.append(1e-6)
-            measures.append([0, 0])
-            continue
+        action_plan = collections.deque()
 
-        if video_logdir is not None:
-            # ID each sol with datetime to prevent overwriting
-            sol_logdir = Path(video_logdir) / f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            sol_logdir.mkdir(parents=True)
-        
-        # compute_spread_similarity must be called at the start before any 
-        # action since actions might change objects' locations
-        spread, similarity = env.env.compute_spread_similarity()
-        measures.append([spread, similarity])
+        new_trajectory = Trajectory(prompt=env.language_instruction)
+        for t in range(max_steps + num_steps_wait):
+            try:
+                if t < num_steps_wait:
+                    # Do nothing at the start to wait for env to settle
+                    obs, reward, done, info = env.step([0.0] * 6 + [-1.0])
+                    continue
 
-        # Get success rates by running openpi on env
-        print(f"------------------ Rolling out solution{sol_id}")
-        success_rate = 0
-        for trial_id in range(ntrials):
-            obs = env.reset()
-            action_plan = collections.deque()
+                img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+                wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
 
-            replay_images = []
+                if not action_plan:
+                    element = {
+                        "observation/image": img,
+                        "observation/wrist_image": wrist_img,
+                        "observation/state": np.concatenate(
+                            (
+                                obs["robot0_eef_pos"],
+                                _quat2axisangle(obs["robot0_eef_quat"]),
+                                obs["robot0_gripper_qpos"],
+                            )
+                        ),
+                        "prompt": env.language_instruction,
+                    }
 
-            success = False
-            for t in range(max_steps + num_steps_wait):
-                try:
-                    if t < num_steps_wait:
-                        # Do nothing at the start to wait for env to settle
-                        obs, reward, done, info = env.step([0.0] * 6 + [-1.0])
-                        continue
+                    action_chunk = openpi_client.infer(element)["actions"]
+                    assert (
+                        len(action_chunk) >= replan_steps
+                    ), f"We want to replan every {replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
+                    action_plan.extend(action_chunk[: replan_steps])
 
-                    img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
-                    wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+                    # store in trajectory list
+                    new_trajectory.image.append(img)
+                    new_trajectory.wrist_image.append(wrist_img)
+                    new_trajectory.state.append(element["observation/state"]) 
+                    # new_trajectory.action_plan.append(list(action_plan)) # (?) is this correct
 
-                    replay_images.append(img)
+                action = action_plan.popleft()
 
-                    if not action_plan:
-                        element = {
-                            "observation/image": img,
-                            "observation/wrist_image": wrist_img,
-                            "observation/state": np.concatenate(
-                                (
-                                    obs["robot0_eef_pos"],
-                                    _quat2axisangle(obs["robot0_eef_quat"]),
-                                    obs["robot0_gripper_qpos"],
-                                )
-                            ),
-                            "prompt": env.language_instruction,
-                        }
-
-                        action_chunk = client.infer(element)["actions"]
-                        assert (
-                            len(action_chunk) >= replan_steps
-                        ), f"We want to replan every {replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
-                        action_plan.extend(action_chunk[: replan_steps])
-
-                    action = action_plan.popleft()
-
-                    obs, reward, done, info = env.step(action.tolist())
-                    if done:
-                        success_rate += 1 / ntrials
-                        success = True
-                        break
-
-                except Exception as e:
-                    print(e)
+                obs, reward, done, info = env.step(action.tolist())
+                if done:
+                    success_rate += 1 / ntrials
+                    new_trajectory.success = True
                     break
 
-            print(f"\t trial{trial_id}: {'success' if success else 'fail'}")
-            
-            if video_logdir is not None:
-                imageio.mimwrite(
-                    sol_logdir / f"trial{trial_id}_{'success' if success else 'fail'}.mp4",
-                    [np.asarray(x) for x in replay_images],
-                    fps=10,
-                )
-            
-        # Maximizes entropy as objective, i.e. we want more uncertain 
-        # success rates
-        success_rate = np.clip(success_rate, 1e-6, 1 - 1e-6)
-        objectives.append(-success_rate*math.log2(success_rate) - (1-success_rate)*math.log2(1-success_rate))
+            except Exception as e:
+                print(e)
+                # TODO: How to handle solutions that fail to evaluate
+                return 1e-6, 0, 0, None
 
-    return np.asarray(objectives), np.asarray(measures)
+        trajectories.append(new_trajectory)
+        print(f"\t trial{trial_id}: {'success' if new_trajectory.success else 'fail'}")
+        
+        if video_logdir is not None:
+            imageio.mimwrite(
+                sol_logdir / f"trial{trial_id}_{'success' if new_trajectory.success else 'fail'}.mp4",
+                [np.asarray(x) for x in new_trajectory.image],
+                fps=10,
+            )
+            
+    # Maximizes entropy as objective, i.e. we want more uncertain 
+    # success rates
+    success_rate = np.clip(success_rate, 1e-6, 1 - 1e-6)
+    entropy = -success_rate*math.log2(success_rate) - (1-success_rate)*math.log2(1-success_rate)
 
+    openpi_client._ws.close()
+
+    edit_dist = np.linalg.norm(env.env.params - params)
+    num_movable = len(env.env.objects_dict) / 2
+    edit_dist /= (num_movable*np.linalg.norm(2*env.env.table_bounds))
+
+    return entropy, spread, similarity, np.array(trajectories), edit_dist
+
+# def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
+#     objs = []
+#     meas = []
+#     trajs = []
+#     edit_dists = []
+#     for sol_id, sol in enumerate(params):
+#         entropy, spread, similarity, trajectoris, ed = evaluate(sol, ntrials, seed+sol_id, video_logdir)
+#         objs.append(entropy)
+#         meas.append([spread, similarity])
+#         trajs.append(trajectoris)
+#         edit_dists.append(ed)
+    
+#     return np.array(objs), np.array(meas), np.array(trajs), np.array(edit_dists)
+
+def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
+    """Parallelized version of :func:`evaluate`.
+
+    Args:
+        params (np.ndarray): Array of shape (batch_size, solution_dim) 
+            containing solutions to be evaluated.
+        ntrials (int): Number of rollouts for each solution.
+        seed (int): Seed.
+        video_logdir (str): Folder for saving rollout videos. If None no video 
+            is saved.
+
+    Return:
+        objective (np.ndarray): Array of shape (batch_size,). Entropies of 
+            VLA's success rates on the environments created from ``params``.
+        measures (np.ndarray): Array of shape (batch_size, measure_dim). 
+            Spread and similarity of environments created from ``params``.
+        trajectories (np.ndarray): Array of shape (batch_size, ntrials). 
+            Rollout trajectories.
+        edit_dist (float): Array of shape (batch_size,). Each entry is a float 
+            in range [0,1] representing normalized MILP editing distance.
+    """
+    batch_size = params.shape[0]
+    nworkers = len(client.scheduler_info()['workers'])
+    assert nworkers >= batch_size, (
+        f"batch_size={batch_size} exceeds the number of workers "
+        f"{nworkers}"
+    )
+
+    futures = [
+        client.submit(
+            evaluate,
+            params=sol,
+            ntrials=ntrials,
+            seed=seed+sol_id,
+            video_logdir=video_logdir,
+            pure=False,
+        )
+        for sol_id, sol in enumerate(params)
+    ]
+    results = client.gather(futures)
+
+    objs, meas, trajs, edit_dists = [], [], [], []
+
+    # Process the results.
+    for entropy, spread, similarity, trajectoris, ed in results:
+        objs.append(entropy)
+        meas.append([spread, similarity])
+        trajs.append(trajectoris)
+        edit_dists.append(ed)
+
+    return np.array(objs), np.array(meas), np.array(trajs), np.array(edit_dists)
 
 def save_heatmap(archive, heatmap_path):
     """Saves a heatmap of the archive to the given path.
@@ -205,7 +316,6 @@ def save_heatmap(archive, heatmap_path):
     plt.savefig(heatmap_path)
     plt.close(plt.gcf())
 
-
 def main(
     iterations=1000,
     num_trials_per_sol=5,
@@ -215,7 +325,7 @@ def main(
     seed=42,
     outdir="test_logs",
     reload_from=None,
-    log_every=10,
+    log_every=1,
 ):
     logdir = Path(outdir)
     logdir.mkdir(exist_ok=True)
@@ -230,28 +340,37 @@ def main(
         #       cookies_1_x, cookies_1_y,
         #       glazed_rim_porcelain_ramekin_1_x,
         #       glazed_rim_porcelain_ramekin_1_y,
-        #       plate_1_x, plate_1_y
+        #       plate_1_x, plate_1_y,
+        #       light_x, light_y, light_z
+        #       camera_x, camera_y, camera_z,
+        #       table_r, table_g, table_b
         #   ]
         main_archive = GridArchive(
-            solution_dim=10,
+            solution_dim=19,
             dims=archive_resolution,
             ranges=[(0, 1)] * 2,
             # learning_rate=0.1,
             # threshold_min=0,
             seed=seed,
+            extra_fields={
+                "trajectories": ((num_trials_per_sol,), object)
+            }
         )
         passive_archive = GridArchive(
-            solution_dim=10,
+            solution_dim=19,
             dims=archive_resolution,
             ranges=[(0, 1)] * 2,
             seed=seed,
+            extra_fields={
+                "trajectories": ((num_trials_per_sol,), object)
+            }
         )
 
         emitters = [
             EvolutionStrategyEmitter(
                 archive=main_archive,
                 # Range centers copied from BDDL file
-                x0=[-0.18, 0.32, 0.13, -0.07, 0.07, 0.03, -0.20, 0.20, 0.06, 0.20],
+                x0=[-0.18, 0.32, 0.13, -0.07, 0.07, 0.03, -0.20, 0.20, 0.06, 0.20, 1, 1, 4, 0.66, 0, 1.61, 0.5, 0.5, 0.5],
                 sigma0=0.02,
                 # TODO: Define bounds if we want to stay close to the original BDDL
                 bounds=None,
@@ -275,12 +394,21 @@ def main(
         with open(file=reload_from, mode="rb") as f:
             scheduler = pkl.load(f)
 
+    cluster = LocalCluster(
+        processes=True, 
+        n_workers=batch_size, 
+        threads_per_worker=1, 
+    )
+    client = Client(cluster)
+    
     start = 1 if reload_from is None else reload_itr + 1
     end = start + iterations
     for i in range(start, end):
         solutions = scheduler.ask()
-        objectives, measures = evaluate(params=solutions, ntrials=num_trials_per_sol, seed=seed, video_logdir=None)
-        scheduler.tell(objectives, measures)
+        objectives, measures, trajectories, edit_dists = evaluate_parallel(client=client, params=solutions, ntrials=num_trials_per_sol, seed=seed, video_logdir=None)
+        
+        # Penalize objective with MILP editing distance if there is any
+        scheduler.tell(np.clip(objectives-edit_dists, a_min=0, a_max=None), measures, trajectories=trajectories)
 
         print(
             f"\n------------------ Iteration{i} ------------------\n"
