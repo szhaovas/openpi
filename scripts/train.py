@@ -26,6 +26,8 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
+import openpi.shared.download as download
+from openpi.models.pi0_fast import Pi0FAST
 
 
 def init_logging():
@@ -197,6 +199,82 @@ def train_step(
     return new_state, info
 
 
+@at.typecheck
+def train_dpo(
+    config: _config.TrainConfig,
+    ref_params: nnx.State,
+    ref_model_def: nnx.GraphDef[_model.BaseModel],
+    rng: at.KeyArrayLike,
+    state: training_utils.TrainState,
+    pair_batch: tuple[_model.Observation, _model.Actions, _model.Observation, _model.Actions],
+) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
+    model = nnx.merge(state.model_def, state.params)
+    model.train()
+    ref_model = nnx.merge(ref_model_def, ref_params)
+
+    @at.typecheck
+    def dpo_loss(
+        model: Pi0FAST, 
+        ref_model: Pi0FAST, 
+        pair_observation: tuple[_model.Observation, _model.Observation], 
+        rng: at.KeyArrayLike, 
+        beta: float
+    ):
+        rngs = jax.random.split(rng, 4)
+        # TODO: Return type
+        model_chosen_logps = -model.compute_loss(rngs[0], pair_observation[0], None, train=True)
+        model_rejected_logps = -model.compute_loss(rngs[1], pair_observation[1], None, train=True)
+        reference_chosen_logps = -ref_model.compute_loss(rngs[2], pair_observation[0], None, train=True)
+        reference_rejected_logps = -ref_model.compute_loss(rngs[3], pair_observation[1], None, train=True)
+
+        pi_logratios = model_chosen_logps - model_rejected_logps
+        ref_logratios = reference_chosen_logps - reference_rejected_logps
+
+        logits = pi_logratios - ref_logratios
+        
+        return jnp.mean(jax.nn.log_sigmoid(beta * logits))
+
+    train_rng = jax.random.fold_in(rng, state.step)
+    success_observation, _, fail_observation, _ = pair_batch
+
+    # Filter out frozen params.
+    diff_state = nnx.DiffState(0, config.trainable_filter)
+    loss, grads = nnx.value_and_grad(dpo_loss, argnums=diff_state)(model, ref_model, (success_observation, fail_observation), train_rng, config.pref_beta)
+
+    params = state.params.filter(config.trainable_filter)
+    updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
+    new_params = optax.apply_updates(params, updates)
+
+    # Update the model in place and return the new full state.
+    nnx.update(model, new_params)
+    new_params = nnx.state(model)
+
+    new_state = dataclasses.replace(state, step=state.step + 1, params=new_params, opt_state=new_opt_state)
+    if state.ema_decay is not None:
+        new_state = dataclasses.replace(
+            new_state,
+            ema_params=jax.tree.map(
+                lambda old, new: state.ema_decay * old + (1 - state.ema_decay) * new, state.ema_params, new_params
+            ),
+        )
+
+    # Filter out params that aren't kernels.
+    kernel_params = nnx.state(
+        model,
+        nnx.All(
+            nnx.Param,
+            nnx.Not(nnx_utils.PathRegex(".*/(bias|scale|pos_embedding|input_embedding)")),
+            lambda _, x: x.value.ndim > 1,
+        ),
+    )
+    info = {
+        "loss": loss,
+        "grad_norm": optax.global_norm(grads),
+        "param_norm": optax.global_norm(kernel_params),
+    }
+    return new_state, info
+
+
 def main(config: _config.TrainConfig):
     init_logging()
     logging.info(f"Running on: {platform.node()}")
@@ -246,12 +324,26 @@ def main(config: _config.TrainConfig):
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
 
-    ptrain_step = jax.jit(
-        functools.partial(train_step, config),
-        in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
-        out_shardings=(train_state_sharding, replicated_sharding),
-        donate_argnums=(1,),
-    )
+    if config.pref_mode:
+        # FIXME: For reference model, do we use libero norm stats or norm stats of our own pref dataset?
+        ref_model_dir = download.maybe_download(str(config.ref_model_checkpoint))
+        ref_model = _config.get_config(config.ref_model_config).model.load(_model.restore_params(ref_model_dir / "params", dtype=jnp.bfloat16))
+        ref_params = nnx.state(ref_model)
+        ref_params_sharding = sharding.fsdp_sharding(ref_params, mesh, log=True)
+        ref_model_def = nnx.graphdef(ref_model)
+        ptrain_step = jax.jit(
+            functools.partial(train_dpo, config),
+            in_shardings=(ref_params_sharding, None, replicated_sharding, train_state_sharding, data_sharding),
+            out_shardings=(train_state_sharding, replicated_sharding),
+            donate_argnums=(3,),
+        )
+    else:
+        ptrain_step = jax.jit(
+            functools.partial(train_step, config),
+            in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+            out_shardings=(train_state_sharding, replicated_sharding),
+            donate_argnums=(1,),
+        )
 
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
@@ -264,7 +356,10 @@ def main(config: _config.TrainConfig):
     infos = []
     for step in pbar:
         with sharding.set_mesh(mesh):
-            train_state, info = ptrain_step(train_rng, train_state, batch)
+            if config.pref_mode:
+                train_state, info = ptrain_step(ref_params, ref_model_def, train_rng, train_state, batch)
+            else:
+                train_state, info = ptrain_step(train_rng, train_state, batch)
         infos.append(info)
         if step % config.log_interval == 0:
             stacked_infos = common_utils.stack_forest(infos)

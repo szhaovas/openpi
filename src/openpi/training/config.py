@@ -65,6 +65,14 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    
+    # These are only used for preference learning.
+    # LeRobot repo id for dataset containing negative samples.
+    fail_repo_id: str | None = None
+    # JSONL file containing pairs of success and fail sample indices.
+    pair_filename: pathlib.Path | None = None
+    
+    
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -162,7 +170,7 @@ class DataConfigFactory(abc.ABC):
 
     def create_base_config(self, assets_dirs: pathlib.Path) -> DataConfig:
         repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
-        asset_id = self.assets.asset_id or repo_id
+        asset_id = self.assets.asset_id if self.assets.asset_id is not None else repo_id
         return dataclasses.replace(
             self.base_config or DataConfig(),
             repo_id=repo_id,
@@ -399,6 +407,11 @@ class TrainConfig:
     # Experiment name. Will be used to name the metadata and checkpoint directories.
     exp_name: str = tyro.MISSING
 
+    pref_mode: bool = False
+    pref_beta: float | None = 0.1
+    ref_model_checkpoint: str = "gs://openpi-assets/checkpoints/pi0_fast_libero"
+    ref_model_config: str = "pi0_fast_libero"
+
     # Defines the model config. Some attributes (action_dim, action_horizon, and max_token_len) are shared by all models
     # -- see BaseModelConfig. Specific model implementations (e.g., Pi0Config) inherit from BaseModelConfig and may
     # define additional attributes.
@@ -629,6 +642,27 @@ _CONFIGS = [
         # Note that we load the pi0-FAST base model checkpoint here.
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
         num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_fast_libero_pref",
+        pref_mode=True,
+        model=pi0_fast.Pi0FASTConfig(action_dim=7, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotLiberoDataConfig(
+            repo_id="pref/success",
+            assets=AssetsConfig(asset_id=""),
+            base_config=DataConfig(
+                fail_repo_id="pref/fail",
+                pair_filename=pathlib.Path("pairs.jsonl"),
+                prompt_from_task=True
+            )
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_libero/params"),
+        num_train_steps=300,
+        save_interval=100,
+        freeze_filter=pi0_fast.Pi0FASTConfig(
+            action_dim=7, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
     ),
     TrainConfig(
         name="pi0_fast_libero_low_mem_finetune",

@@ -14,6 +14,8 @@ import openpi.models.model as _model
 import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
+import json
+from dataclasses import dataclass
 
 T_co = TypeVar("T_co", covariant=True)
 
@@ -59,6 +61,23 @@ class TransformedDataset(Dataset[T_co]):
 
     def __len__(self) -> int:
         return len(self._dataset)
+    
+@dataclass
+class LazyPairDataset(Dataset[tuple[T_co, T_co]]):
+    pairs: list[dict[str, int]]
+    positive_dataset: TransformedDataset
+    negative_dataset: TransformedDataset
+
+    def __len__(self) -> int:
+        return len(self.pairs)
+
+    def __getitem__(self, index: SupportsIndex) -> tuple[T_co, T_co]:
+        p = self.pairs[index]
+        
+        return (
+            self.positive_dataset[p['success']], 
+            self.negative_dataset[p['fail']]
+        )
 
 
 class IterableTransformedDataset(IterableDataset[T_co]):
@@ -128,7 +147,7 @@ class FakeDataset(Dataset):
 
 def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
-) -> Dataset:
+) -> tuple[Dataset, Dataset | None]:
     """Create a dataset for training."""
     repo_id = data_config.repo_id
     if repo_id is None:
@@ -137,6 +156,7 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
         delta_timestamps={
@@ -146,8 +166,20 @@ def create_torch_dataset(
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+    
+    fail_dataset = None
+    if data_config.fail_repo_id is not None:
+        fail_dataset = lerobot_dataset.LeRobotDataset(
+            data_config.fail_repo_id,
+            delta_timestamps={
+                key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
+            },
+        )
 
-    return dataset
+        if data_config.prompt_from_task:
+            fail_dataset = TransformedDataset(fail_dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+
+    return dataset, fail_dataset
 
 
 def create_rlds_dataset(
@@ -239,18 +271,32 @@ def create_data_loader(
             num_batches=num_batches,
             skip_norm_stats=skip_norm_stats,
         )
-    return create_torch_data_loader(
-        data_config,
-        model_config=config.model,
-        action_horizon=config.model.action_horizon,
-        batch_size=config.batch_size,
-        sharding=sharding,
-        shuffle=shuffle,
-        num_batches=num_batches,
-        num_workers=config.num_workers,
-        seed=config.seed,
-        skip_norm_stats=skip_norm_stats,
-    )
+    elif data_config.fail_repo_id is not None:
+        return create_torch_pref_data_loader(
+            data_config,
+            model_config=config.model,
+            action_horizon=config.model.action_horizon,
+            batch_size=config.batch_size,
+            sharding=sharding,
+            shuffle=shuffle,
+            num_batches=num_batches,
+            num_workers=config.num_workers,
+            seed=config.seed,
+            skip_norm_stats=skip_norm_stats,
+        )
+    else:
+        return create_torch_data_loader(
+            data_config,
+            model_config=config.model,
+            action_horizon=config.model.action_horizon,
+            batch_size=config.batch_size,
+            sharding=sharding,
+            shuffle=shuffle,
+            num_batches=num_batches,
+            num_workers=config.num_workers,
+            seed=config.seed,
+            skip_norm_stats=skip_norm_stats,
+        )
 
 
 def create_torch_data_loader(
@@ -283,11 +329,58 @@ def create_torch_data_loader(
             execute in the main process.
         seed: The seed to use for shuffling the data.
     """
-    dataset = create_torch_dataset(data_config, action_horizon, model_config)
+    dataset, _ = create_torch_dataset(data_config, action_horizon, model_config)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
     data_loader = TorchDataLoader(
         dataset,
+        local_batch_size=batch_size // jax.process_count(),
+        sharding=sharding,
+        shuffle=shuffle,
+        num_batches=num_batches,
+        num_workers=num_workers,
+        seed=seed,
+    )
+
+    return DataLoaderImpl(data_config, data_loader)
+
+
+def create_torch_pref_data_loader(
+    data_config: _config.DataConfig,
+    model_config: _model.BaseModelConfig,
+    action_horizon: int,
+    batch_size: int,
+    *,
+    sharding: jax.sharding.Sharding | None = None,
+    skip_norm_stats: bool = False,
+    shuffle: bool = False,
+    num_batches: int | None = None,
+    num_workers: int = 0,
+    seed: int = 0,
+) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
+    assert data_config.fail_repo_id is not None, (
+        "DataConfig.fail_repo_id cannot be None for preference learning."
+    )
+    success_dataset, fail_dataset = create_torch_dataset(data_config, action_horizon, model_config)
+
+    success_dataset = transform_dataset(success_dataset, data_config, skip_norm_stats=skip_norm_stats)
+    fail_dataset = transform_dataset(fail_dataset, data_config, skip_norm_stats=skip_norm_stats)
+
+    assert data_config.pair_filename is not None, (
+        "DataConfig.pair_filename cannot be None for preference learning."
+    )
+
+    with open(data_config.pair_filename) as pair_file:
+        pairs = [json.loads(line) for line in pair_file]
+
+    pair_dataset = LazyPairDataset(
+        pairs=pairs, 
+        positive_dataset=success_dataset,
+        negative_dataset=fail_dataset
+    )
+
+    data_loader = TorchDataLoader(
+        pair_dataset,
         local_batch_size=batch_size // jax.process_count(),
         sharding=sharding,
         shuffle=shuffle,
@@ -386,6 +479,9 @@ class TorchDataLoader:
 
         generator = torch.Generator()
         generator.manual_seed(seed)
+
+        collate_fn = _collate_fn if not isinstance(dataset, LazyPairDataset) else _pair_collate_fn
+
         self._data_loader = torch.utils.data.DataLoader(
             typing.cast(torch.utils.data.Dataset, dataset),
             batch_size=local_batch_size,
@@ -393,7 +489,7 @@ class TorchDataLoader:
             num_workers=num_workers,
             multiprocessing_context=mp_context,
             persistent_workers=num_workers > 0,
-            collate_fn=_collate_fn,
+            collate_fn=collate_fn,
             worker_init_fn=_worker_init_fn,
             drop_last=True,
             generator=generator,
@@ -423,6 +519,12 @@ def _collate_fn(items):
     # Make sure to convert to numpy arrays before stacking since some of the incoming elements
     # may be JAX arrays.
     return jax.tree.map(lambda *x: np.stack(np.asarray(x), axis=0), *items)
+
+def _pair_collate_fn(pairs):
+    return tuple(
+        jax.tree.map(lambda *x: np.stack(np.asarray(x), axis=0), *grp)
+        for grp in zip(*pairs)
+    )
 
 
 def _worker_init_fn(worker_id: int) -> None:
@@ -487,4 +589,12 @@ class DataLoaderImpl(DataLoader):
 
     def __iter__(self):
         for batch in self._data_loader:
-            yield _model.Observation.from_dict(batch), batch["actions"]
+            if self._data_config.fail_repo_id is None:
+                yield _model.Observation.from_dict(batch), batch["actions"]
+            else:
+                yield (
+                    _model.Observation.from_dict(batch[0]), 
+                    batch[0]["actions"],
+                    _model.Observation.from_dict(batch[1]), 
+                    batch[1]["actions"],
+                )

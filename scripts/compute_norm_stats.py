@@ -14,6 +14,7 @@ import openpi.shared.normalize as normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.transforms as transforms
+from torch.utils.data import ConcatDataset
 
 
 class RemoveStrings(transforms.DataTransformFn):
@@ -48,6 +49,57 @@ def create_torch_dataloader(
         shuffle = False
     data_loader = _data_loader.TorchDataLoader(
         dataset,
+        local_batch_size=batch_size,
+        num_workers=8,
+        shuffle=shuffle,
+        num_batches=num_batches,
+    )
+    return data_loader, num_batches
+
+
+def create_torch_pref_dataloader(
+    data_config: _config.DataConfig,
+    action_horizon: int,
+    batch_size: int,
+    model_config: _model.BaseModelConfig,
+    max_frames: int | None = None,
+) -> tuple[_data_loader.Dataset, int]:
+    if data_config.repo_id is None:
+        raise ValueError("Data config must have a repo_id")
+    if data_config.fail_repo_id is None:
+        raise ValueError("DataConfig.fail_repo_id cannot be None for preference learning.")
+    
+    success_dataset, fail_dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config)
+    success_dataset = _data_loader.TransformedDataset(
+        success_dataset,
+        [
+            *data_config.repack_transforms.inputs,
+            *data_config.data_transforms.inputs,
+            # Remove strings since they are not supported by JAX and are not needed to compute norm stats.
+            RemoveStrings(),
+        ],
+    )
+    fail_dataset = _data_loader.TransformedDataset(
+        fail_dataset,
+        [
+            *data_config.repack_transforms.inputs,
+            *data_config.data_transforms.inputs,
+            # Remove strings since they are not supported by JAX and are not needed to compute norm stats.
+            RemoveStrings(),
+        ],
+    )
+
+    # success and fail rollouts are normalized together
+    concat_dataset = ConcatDataset([success_dataset, fail_dataset])
+    
+    if max_frames is not None and max_frames < len( concat_dataset):
+        num_batches = max_frames // batch_size
+        shuffle = True
+    else:
+        num_batches = len( concat_dataset) // batch_size
+        shuffle = False
+    data_loader = _data_loader.TorchDataLoader(
+         concat_dataset,
         local_batch_size=batch_size,
         num_workers=8,
         shuffle=shuffle,
@@ -92,6 +144,10 @@ def main(config_name: str, max_frames: int | None = None):
         data_loader, num_batches = create_rlds_dataloader(
             data_config, config.model.action_horizon, config.batch_size, max_frames
         )
+    elif data_config.fail_repo_id is not None:
+        data_loader, num_batches = create_torch_pref_dataloader(
+            data_config, config.model.action_horizon, config.batch_size, config.model, max_frames
+        )
     else:
         data_loader, num_batches = create_torch_dataloader(
             data_config, config.model.action_horizon, config.batch_size, config.model, max_frames
@@ -107,7 +163,11 @@ def main(config_name: str, max_frames: int | None = None):
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = config.assets_dirs / data_config.repo_id
+    if data_config.fail_repo_id is not None:
+        output_path = config.assets_dirs
+    else:
+        output_path = config.assets_dirs / data_config.repo_id
+    
     print(f"Writing stats to: {output_path}")
     normalize.save(output_path, norm_stats)
 
