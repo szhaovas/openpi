@@ -221,18 +221,16 @@ def train_dpo(
         beta: float
     ):
         rngs = jax.random.split(rng, 4)
-        # TODO: Return type
         model_chosen_logps = -model.compute_loss(rngs[0], pair_observation[0], None, train=True)
         model_rejected_logps = -model.compute_loss(rngs[1], pair_observation[1], None, train=True)
         reference_chosen_logps = -ref_model.compute_loss(rngs[2], pair_observation[0], None, train=True)
         reference_rejected_logps = -ref_model.compute_loss(rngs[3], pair_observation[1], None, train=True)
 
-        pi_logratios = model_chosen_logps - model_rejected_logps
-        ref_logratios = reference_chosen_logps - reference_rejected_logps
-
-        logits = pi_logratios - ref_logratios
+        chosen_logratios = model_chosen_logps - reference_chosen_logps
+        rejected_logratios = model_rejected_logps - reference_rejected_logps
+        logits = chosen_logratios - rejected_logratios
         
-        return jnp.mean(jax.nn.log_sigmoid(beta * logits))
+        return -jnp.mean(jax.nn.log_sigmoid(beta * logits))
 
     train_rng = jax.random.fold_in(rng, state.step)
     success_observation, _, fail_observation, _ = pair_batch

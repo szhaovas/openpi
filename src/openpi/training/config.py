@@ -649,7 +649,12 @@ _CONFIGS = [
         model=pi0_fast.Pi0FASTConfig(action_dim=7, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"),
         data=LeRobotLiberoDataConfig(
             repo_id="pref/success",
-            assets=AssetsConfig(asset_id=""),
+            assets=AssetsConfig(
+                # TODO: Currently using norm stats computed on the whole LIBERO 
+                # dataset since our dataset is too small. Once we get more 
+                # data we can use our own norm stats.
+                asset_id=""
+            ),
             base_config=DataConfig(
                 fail_repo_id="pref/fail",
                 pair_filename=pathlib.Path("pairs.jsonl"),
@@ -657,7 +662,7 @@ _CONFIGS = [
             )
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_libero/params"),
-        num_train_steps=300,
+        num_train_steps=600,
         save_interval=100,
         freeze_filter=pi0_fast.Pi0FASTConfig(
             action_dim=7, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
