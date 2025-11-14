@@ -15,7 +15,7 @@ import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
 import json
-from dataclasses import dataclass
+
 
 T_co = TypeVar("T_co", covariant=True)
 
@@ -61,22 +61,52 @@ class TransformedDataset(Dataset[T_co]):
 
     def __len__(self) -> int:
         return len(self._dataset)
+        
     
-@dataclass
 class LazyPairDataset(Dataset[tuple[T_co, T_co]]):
-    pairs: list[dict[str, int]]
-    positive_dataset: TransformedDataset
-    negative_dataset: TransformedDataset
+    def __init__(
+            self, 
+            pairs: list[dict[str, int]], 
+            positive_dataset: TransformedDataset, 
+            negative_dataset: TransformedDataset,
+            max_seqlen: int = 16
+        ):
+        self._pairs = pairs
+        self._positive_dataset = positive_dataset
+        self._negative_dataset = negative_dataset
+        self._max_seqlen = max_seqlen
+
+        assert isinstance(self._positive_dataset._dataset._dataset, lerobot_dataset.LeRobotDataset)
+        assert isinstance(self._negative_dataset._dataset._dataset, lerobot_dataset.LeRobotDataset)
+
+        self._positive_ep_range = self._positive_dataset._dataset._dataset.episode_data_index
+        self._negative_ep_range = self._negative_dataset._dataset._dataset.episode_data_index
+        
 
     def __len__(self) -> int:
-        return len(self.pairs)
+        return len(self._pairs)
 
     def __getitem__(self, index: SupportsIndex) -> tuple[T_co, T_co]:
-        p = self.pairs[index]
+        p = self._pairs[index]
+
+        # FIXME: p['success'] instead of p['success']-1
+        success_start_idx = int(self._positive_ep_range['from'][p['success']-1].item())
+        success_end_idx = int(self._positive_ep_range['to'][p['success']-1].item())
+        if success_end_idx-success_start_idx > self._max_seqlen:
+            success_idx = np.round(np.linspace(success_start_idx, success_end_idx-1, self._max_seqlen))
+        else:
+            success_idx = range(success_start_idx, success_end_idx)
+        
+        fail_start_idx = int(self._negative_ep_range['from'][p['fail']-1].item())
+        fail_end_idx = int(self._negative_ep_range['to'][p['fail']-1].item())
+        if fail_end_idx-fail_start_idx > self._max_seqlen:
+            fail_idx = np.round(np.linspace(fail_start_idx, fail_end_idx-1, self._max_seqlen))
+        else:
+            fail_idx = range(fail_start_idx, fail_end_idx)
         
         return (
-            self.positive_dataset[p['success']], 
-            self.negative_dataset[p['fail']]
+            jax.tree.map(lambda *x: np.stack(list(x), axis=0), *[self._positive_dataset[int(i)] for i in success_idx]),
+            jax.tree.map(lambda *x: np.stack(list(x), axis=0), *[self._negative_dataset[int(i)] for i in fail_idx])
         )
 
 
@@ -276,7 +306,6 @@ def create_data_loader(
             data_config,
             model_config=config.model,
             action_horizon=config.model.action_horizon,
-            batch_size=config.batch_size,
             sharding=sharding,
             shuffle=shuffle,
             num_batches=num_batches,
@@ -349,7 +378,6 @@ def create_torch_pref_data_loader(
     data_config: _config.DataConfig,
     model_config: _model.BaseModelConfig,
     action_horizon: int,
-    batch_size: int,
     *,
     sharding: jax.sharding.Sharding | None = None,
     skip_norm_stats: bool = False,
@@ -381,10 +409,9 @@ def create_torch_pref_data_loader(
 
     data_loader = TorchDataLoader(
         pair_dataset,
-        local_batch_size=batch_size // jax.process_count(),
+        local_batch_size=1,
         sharding=sharding,
         shuffle=shuffle,
-        num_batches=num_batches,
         num_workers=num_workers,
         seed=seed,
     )
@@ -480,8 +507,6 @@ class TorchDataLoader:
         generator = torch.Generator()
         generator.manual_seed(seed)
 
-        collate_fn = _collate_fn if not isinstance(dataset, LazyPairDataset) else _pair_collate_fn
-
         self._data_loader = torch.utils.data.DataLoader(
             typing.cast(torch.utils.data.Dataset, dataset),
             batch_size=local_batch_size,
@@ -489,7 +514,7 @@ class TorchDataLoader:
             num_workers=num_workers,
             multiprocessing_context=mp_context,
             persistent_workers=num_workers > 0,
-            collate_fn=collate_fn,
+            collate_fn=_collate_fn if not isinstance(dataset, LazyPairDataset) else _dummy_collate,
             worker_init_fn=_worker_init_fn,
             drop_last=True,
             generator=generator,
@@ -520,11 +545,9 @@ def _collate_fn(items):
     # may be JAX arrays.
     return jax.tree.map(lambda *x: np.stack(np.asarray(x), axis=0), *items)
 
-def _pair_collate_fn(pairs):
-    return tuple(
-        jax.tree.map(lambda *x: np.stack(np.asarray(x), axis=0), *grp)
-        for grp in zip(*pairs)
-    )
+
+def _dummy_collate(items):
+    return items
 
 
 def _worker_init_fn(worker_id: int) -> None:
@@ -593,8 +616,6 @@ class DataLoaderImpl(DataLoader):
                 yield _model.Observation.from_dict(batch), batch["actions"]
             else:
                 yield (
-                    _model.Observation.from_dict(batch[0]), 
-                    batch[0]["actions"],
-                    _model.Observation.from_dict(batch[1]), 
-                    batch[1]["actions"],
+                    _model.Observation.from_dict(batch[0][0]), 
+                    _model.Observation.from_dict(batch[0][1])
                 )

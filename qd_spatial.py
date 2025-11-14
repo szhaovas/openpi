@@ -293,11 +293,11 @@ def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
     objs, meas, edit_dists, trajs = [], [], [], []
 
     # Process the results.
-    for entropy, spread, similarity, ed, trajectoris in results:
+    for entropy, spread, similarity, ed, trajectories in results:
         objs.append(entropy)
         meas.append([spread, similarity])
         edit_dists.append(ed)
-        trajs.append(trajectoris)
+        trajs.append(trajectories)
 
     return np.array(objs), np.array(meas), np.array(edit_dists), trajs
 

@@ -125,16 +125,16 @@ def generate_all_train_assets(
                             traj,
                             success_dataset
                         )
-                    success_episode_counter += 1
                     success_traj_idx.append(success_episode_counter)
+                    success_episode_counter += 1
                 else:
                     with _suppress_tqdm():
                         _add_trajectory_to_dataset(
                             traj,
                             fail_dataset
                         )
-                    fail_episode_counter += 1
                     fail_traj_idx.append(fail_episode_counter)
+                    fail_episode_counter += 1
 
             # All success or all fail, no pair
             if len(success_traj_idx) == 0 or len(fail_traj_idx) == 0:

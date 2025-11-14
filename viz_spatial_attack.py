@@ -5,8 +5,10 @@ import numpy as np
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, dcc, html, no_update
 from ribs.visualize import grid_archive_heatmap
+from ribs.archives import GridArchive
 
-from qd_spatial import evaluate
+from qd_spatial import evaluate, evaluate_parallel, save_heatmap, Trajectory
+from dask.distributed import Client, LocalCluster
 
 
 def show_interactive_archive(archive):
@@ -96,14 +98,80 @@ def host_interactive_archive(archive, port=8050):
         return None
 
     app.run(host="0.0.0.0", port=port, debug=True)
+
+
+# FIXME: save success rates in archive cells when collecting trajectories
+def get_success_rates_from_archive(
+    env_archive,
+    heatmap_savepath="success_rates_baseline.png"
+):
+    dummy_archive = GridArchive(
+        solution_dim=env_archive.solution_dim,
+        dims=env_archive.dims,
+        ranges=np.stack((env_archive.lower_bounds, env_archive.upper_bounds)).T,
+    )
+
+    for cell in env_archive:
+        ntrials = len(cell['trajectories'])
+        
+        success_rate = 0
+        for traj in cell['trajectories']:
+            success_rate += traj.success / ntrials
+        
+        dummy_archive.add_single(solution=cell['solution'], objective=success_rate, measures=cell['measures'])
+
+    save_heatmap(dummy_archive, heatmap_savepath)
+
+
+def success_rates_on_envs(
+    env_archive, 
+    ntrials=4, 
+    eval_batch_size=4, 
+    heatmap_savepath="success_rates.png",
+    dummy_archive_savepath="success_rates.pkl"
+):
+    cluster = LocalCluster(
+        processes=True, 
+        n_workers=eval_batch_size, 
+        threads_per_worker=1, 
+    )
+    client = Client(cluster)
+
+    dummy_archive = GridArchive(
+        solution_dim=env_archive.solution_dim,
+        dims=env_archive.dims,
+        ranges=np.stack((env_archive.lower_bounds, env_archive.upper_bounds)).T,
+    )
     
+    all_envs = env_archive.data("solution")
+    env_counter = 0
+    while env_counter < all_envs.shape[0]:
+        params = all_envs[env_counter : min(env_counter+eval_batch_size, all_envs.shape[0])]
+        _, measures, _, trajectories = evaluate_parallel(client=client, params=params, ntrials=ntrials, seed=42, video_logdir=None)
+        
+        success_rates = []
+        for trajs in trajectories:
+            sr = 0
+            for t in trajs:
+                sr += t.success / ntrials
+            success_rates.append(sr)
+        
+        dummy_archive.add(solution=params, objective=success_rates, measures=measures)
+        env_counter += eval_batch_size
+
+        with open(dummy_archive_savepath, "wb") as f:
+            pkl.dump(dummy_archive, f)
+    
+    save_heatmap(dummy_archive, heatmap_savepath)
 
 if __name__ == "__main__":
     with open(
         # Enter the scheduler checkpoint you want to visualize here
-        file="scheduler_00001000.pkl",
+        file="test_logs/scheduler_00000020.pkl",
         mode="rb",
     ) as f:
         archive = pkl.load(f).result_archive
         # show_interactive_archive(archive)
         host_interactive_archive(archive)
+        # success_rates_on_envs(archive)
+        # get_success_rates_from_archive(archive)

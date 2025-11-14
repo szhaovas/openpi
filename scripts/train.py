@@ -206,11 +206,41 @@ def train_dpo(
     ref_model_def: nnx.GraphDef[_model.BaseModel],
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
-    pair_batch: tuple[_model.Observation, _model.Actions, _model.Observation, _model.Actions],
+    pair_batch: tuple[_model.Observation, _model.Observation],
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
     ref_model = nnx.merge(ref_model_def, ref_params)
+
+    # def dpo_loss(
+    #     model: Pi0FAST, 
+    #     ref_model: Pi0FAST, 
+    #     pair_traj: tuple[_model.Observation, _model.Observation], # ((seqlen1, *), (seqlen2, *))
+    #     rng: at.KeyArrayLike, 
+    #     beta: float
+    # ):
+    #     success_rng, fail_rng = jax.random.split(rng)
+
+    #     def traj_logpratio(
+    #         carry: tuple[jax.Array, at.KeyArrayLike], 
+    #         step_obs: _model.Observation # (1,)
+    #     ):
+    #         logpratio, rng = carry
+    #         rng, model_rng, ref_rng = jax.random.split(rng, 3)
+
+    #         step_obs = jax.tree.map(lambda y: jnp.expand_dims(y, 0), step_obs)
+
+    #         model_logp = -model.compute_loss(model_rng, step_obs, None, train=True)
+    #         reference_logp = -ref_model.compute_loss(ref_rng, step_obs, None, train=True)
+    #         logpratio += (model_logp - reference_logp)
+            
+    #         return (logpratio, rng), None
+
+    #     (chosen_logratios, _), _ = jax.lax.scan(traj_logpratio, (jnp.array([0.0]), success_rng), pair_traj[0])
+    #     (rejected_logratios, _), _ = jax.lax.scan(traj_logpratio, (jnp.array([0.0]), fail_rng), pair_traj[1])
+    #     logits = chosen_logratios - rejected_logratios
+        
+    #     return -jax.nn.log_sigmoid(beta * logits)[0]
 
     @at.typecheck
     def dpo_loss(
@@ -221,23 +251,23 @@ def train_dpo(
         beta: float
     ):
         rngs = jax.random.split(rng, 4)
+        
         model_chosen_logps = -model.compute_loss(rngs[0], pair_observation[0], None, train=True)
         model_rejected_logps = -model.compute_loss(rngs[1], pair_observation[1], None, train=True)
         reference_chosen_logps = -ref_model.compute_loss(rngs[2], pair_observation[0], None, train=True)
         reference_rejected_logps = -ref_model.compute_loss(rngs[3], pair_observation[1], None, train=True)
 
-        chosen_logratios = model_chosen_logps - reference_chosen_logps
-        rejected_logratios = model_rejected_logps - reference_rejected_logps
-        logits = chosen_logratios - rejected_logratios
+        chosen_logratio = jnp.sum(model_chosen_logps - reference_chosen_logps)
+        rejected_logratio = jnp.sum(model_rejected_logps - reference_rejected_logps)
+        logit = chosen_logratio - rejected_logratio
         
-        return -jnp.mean(jax.nn.log_sigmoid(beta * logits))
+        return -jax.nn.log_sigmoid(beta * logit)
 
     train_rng = jax.random.fold_in(rng, state.step)
-    success_observation, _, fail_observation, _ = pair_batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(dpo_loss, argnums=diff_state)(model, ref_model, (success_observation, fail_observation), train_rng, config.pref_beta)
+    loss, grads = nnx.value_and_grad(dpo_loss, argnums=diff_state)(model, ref_model, pair_batch, train_rng, config.pref_beta)
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
