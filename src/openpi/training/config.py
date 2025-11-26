@@ -408,7 +408,7 @@ class TrainConfig:
     exp_name: str = tyro.MISSING
 
     pref_mode: bool = False
-    pref_beta: float | None = 0.1
+    pref_beta: float | None = 0.01
     ref_model_checkpoint: str = "gs://openpi-assets/checkpoints/pi0_fast_libero"
     ref_model_config: str = "pi0_fast_libero"
 
@@ -662,9 +662,11 @@ _CONFIGS = [
             )
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_libero/params"),
-        num_train_steps=1000,
-        save_interval=200,
-        keep_period=100,
+        num_train_steps=200*16,
+        batch_size=16,
+        log_interval=10*16,
+        save_interval=200*16,
+        keep_period=100*16,
         freeze_filter=pi0_fast.Pi0FASTConfig(
             action_dim=7, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
         ).get_freeze_filter(),

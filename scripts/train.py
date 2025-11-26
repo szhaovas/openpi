@@ -85,9 +85,16 @@ def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shap
 
 @at.typecheck
 def init_train_state(
-    config: _config.TrainConfig, init_rng: at.KeyArrayLike, mesh: jax.sharding.Mesh, *, resume: bool
+    config: _config.TrainConfig, 
+    init_rng: at.KeyArrayLike, 
+    mesh: jax.sharding.Mesh, 
+    *, 
+    resume: bool, 
+    every_k_schedule: int = 1
 ) -> tuple[training_utils.TrainState, Any]:
     tx = _optimizer.create_optimizer(config.optimizer, config.lr_schedule, weight_decay_mask=None)
+    if every_k_schedule > 1:
+        tx = optax.MultiSteps(tx, every_k_schedule)
 
     def init(rng: at.KeyArrayLike, partial_params: at.Params | None = None) -> training_utils.TrainState:
         rng, model_rng = jax.random.split(rng)
@@ -212,36 +219,6 @@ def train_dpo(
     model.train()
     ref_model = nnx.merge(ref_model_def, ref_params)
 
-    # def dpo_loss(
-    #     model: Pi0FAST, 
-    #     ref_model: Pi0FAST, 
-    #     pair_traj: tuple[_model.Observation, _model.Observation], # ((seqlen1, *), (seqlen2, *))
-    #     rng: at.KeyArrayLike, 
-    #     beta: float
-    # ):
-    #     success_rng, fail_rng = jax.random.split(rng)
-
-    #     def traj_logpratio(
-    #         carry: tuple[jax.Array, at.KeyArrayLike], 
-    #         step_obs: _model.Observation # (1,)
-    #     ):
-    #         logpratio, rng = carry
-    #         rng, model_rng, ref_rng = jax.random.split(rng, 3)
-
-    #         step_obs = jax.tree.map(lambda y: jnp.expand_dims(y, 0), step_obs)
-
-    #         model_logp = -model.compute_loss(model_rng, step_obs, None, train=True)
-    #         reference_logp = -ref_model.compute_loss(ref_rng, step_obs, None, train=True)
-    #         logpratio += (model_logp - reference_logp)
-            
-    #         return (logpratio, rng), None
-
-    #     (chosen_logratios, _), _ = jax.lax.scan(traj_logpratio, (jnp.array([0.0]), success_rng), pair_traj[0])
-    #     (rejected_logratios, _), _ = jax.lax.scan(traj_logpratio, (jnp.array([0.0]), fail_rng), pair_traj[1])
-    #     logits = chosen_logratios - rejected_logratios
-        
-    #     return -jax.nn.log_sigmoid(beta * logits)[0]
-
     @at.typecheck
     def dpo_loss(
         model: Pi0FAST, 
@@ -252,22 +229,35 @@ def train_dpo(
     ):
         rngs = jax.random.split(rng, 4)
         
-        model_chosen_logps = -model.compute_loss(rngs[0], pair_observation[0], None, train=True)
-        model_rejected_logps = -model.compute_loss(rngs[1], pair_observation[1], None, train=True)
-        reference_chosen_logps = -ref_model.compute_loss(rngs[2], pair_observation[0], None, train=True)
-        reference_rejected_logps = -ref_model.compute_loss(rngs[3], pair_observation[1], None, train=True)
+        # CE loss is negative log-likelihood on step.
+        # Negate and sum across steps to get log-likelihood on trajectory
+        model_chosen_logp = jnp.sum(-model.compute_loss(rngs[0], pair_observation[0], None, train=True))
+        model_rejected_logp = jnp.sum(-model.compute_loss(rngs[1], pair_observation[1], None, train=True))
+        reference_chosen_logp = jnp.sum(-ref_model.compute_loss(rngs[2], pair_observation[0], None, train=True))
+        reference_rejected_logp = jnp.sum(-ref_model.compute_loss(rngs[3], pair_observation[1], None, train=True))
+        # TODO: add new failed trajs to dataset to see if it teaches TPO to avoid those
+        # TODO: data augmentation to get more pairs, e.g. different downsample, add noise
 
-        chosen_logratio = jnp.sum(model_chosen_logps - reference_chosen_logps)
-        rejected_logratio = jnp.sum(model_rejected_logps - reference_rejected_logps)
+        chosen_logratio = model_chosen_logp - reference_chosen_logp
+        rejected_logratio = model_rejected_logp - reference_rejected_logp
         logit = chosen_logratio - rejected_logratio
-        
-        return -jax.nn.log_sigmoid(beta * logit)
+
+        # log TPO components
+        components = {
+            'model_chosen_logp': model_chosen_logp,
+            'model_rejected_logp': model_rejected_logp,
+            'reference_chosen_logp': reference_chosen_logp,
+            'reference_rejected_logp': reference_rejected_logp
+        }
+
+        return -jax.nn.log_sigmoid(beta * logit), components
+        # return -model_chosen_logp
 
     train_rng = jax.random.fold_in(rng, state.step)
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(dpo_loss, argnums=diff_state)(model, ref_model, pair_batch, train_rng, config.pref_beta)
+    (loss, aux_info), grads = nnx.value_and_grad(dpo_loss, argnums=diff_state, has_aux=True)(model, ref_model, pair_batch, train_rng, config.pref_beta)
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -300,6 +290,7 @@ def train_dpo(
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
     }
+    info.update(aux_info)
     return new_state, info
 
 
@@ -336,6 +327,7 @@ def main(config: _config.TrainConfig):
     )
     data_iter = iter(data_loader)
     batch = next(data_iter)
+    # imageio.mimwrite("temp.mp4",batch[0].images['base_0_rgb'],fps=10)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
 
     # Log images from first batch to sanity check.
@@ -345,7 +337,13 @@ def main(config: _config.TrainConfig):
     ]
     wandb.log({"camera_views": images_to_log}, step=0)
 
-    train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
+    every_k_schedule = config.batch_size if config.pref_mode else 1
+    train_state, train_state_sharding = init_train_state(
+        config, init_rng, mesh, 
+        resume=resuming, 
+        every_k_schedule=every_k_schedule
+    )
+
     jax.block_until_ready(train_state)
     logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
 
@@ -388,6 +386,9 @@ def main(config: _config.TrainConfig):
                 train_state, info = ptrain_step(ref_params, ref_model_def, train_rng, train_state, batch)
             else:
                 train_state, info = ptrain_step(train_rng, train_state, batch)
+            # info['loss'].block_until_ready()
+            # jax.profiler.save_device_memory_profile("memory.prof")
+            # __import__('pdb').set_trace()
         infos.append(info)
         if step % config.log_interval == 0:
             stacked_infos = common_utils.stack_forest(infos)

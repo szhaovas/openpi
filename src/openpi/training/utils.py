@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Union
 
 from flax import nnx
 from flax import struct
@@ -17,7 +17,7 @@ class TrainState:
     params: nnx.State
     model_def: nnx.GraphDef[_model.BaseModel]
     opt_state: optax.OptState
-    tx: optax.GradientTransformation = struct.field(pytree_node=False)
+    tx: Union[optax.GradientTransformation, optax.MultiSteps] = struct.field(pytree_node=False)
 
     ema_decay: float | None = struct.field(pytree_node=False)
     ema_params: nnx.State | None = None

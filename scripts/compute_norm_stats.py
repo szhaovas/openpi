@@ -16,6 +16,9 @@ import openpi.training.data_loader as _data_loader
 import openpi.transforms as transforms
 from torch.utils.data import ConcatDataset
 
+import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+import openpi.transforms as _transforms
+
 
 class RemoveStrings(transforms.DataTransformFn):
     def __call__(self, x: dict) -> dict:
@@ -69,6 +72,24 @@ def create_torch_pref_dataloader(
     if data_config.fail_repo_id is None:
         raise ValueError("DataConfig.fail_repo_id cannot be None for preference learning.")
     
+    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata("physical-intelligence/libero")
+    base_dataset = lerobot_dataset.LeRobotDataset(
+        "physical-intelligence/libero",
+        delta_timestamps={
+            key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
+        },
+    )
+    base_dataset = _data_loader.TransformedDataset(base_dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+    base_dataset = _data_loader.TransformedDataset(
+        base_dataset,
+        [
+            *data_config.repack_transforms.inputs,
+            *data_config.data_transforms.inputs,
+            # Remove strings since they are not supported by JAX and are not needed to compute norm stats.
+            RemoveStrings(),
+        ],
+    )
+    
     success_dataset, fail_dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config)
     success_dataset = _data_loader.TransformedDataset(
         success_dataset,
@@ -90,7 +111,7 @@ def create_torch_pref_dataloader(
     )
 
     # success and fail rollouts are normalized together
-    concat_dataset = ConcatDataset([success_dataset, fail_dataset])
+    concat_dataset = ConcatDataset([base_dataset, success_dataset, fail_dataset])
     
     if max_frames is not None and max_frames < len( concat_dataset):
         num_batches = max_frames // batch_size
