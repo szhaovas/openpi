@@ -83,6 +83,14 @@ def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shap
     )
 
 
+def print_only_sharded(pytree, name="pytree"):
+    flat, _ = jax.tree_util.tree_flatten(pytree)
+    print(f"== {name} sharded leaves ==")
+    for i, leaf in enumerate(flat):
+        if isinstance(leaf, jax.Array) and getattr(leaf, "sharding", None) is not None:
+            print(f"leaf[{i}] shape={leaf.shape} sharding={leaf.sharding}")
+
+
 @at.typecheck
 def init_train_state(
     config: _config.TrainConfig, 
@@ -207,7 +215,7 @@ def train_step(
 
 
 @at.typecheck
-def train_dpo(
+def train_tpo(
     config: _config.TrainConfig,
     ref_params: nnx.State,
     ref_model_def: nnx.GraphDef[_model.BaseModel],
@@ -356,9 +364,10 @@ def main(config: _config.TrainConfig):
         ref_model = _config.get_config(config.ref_model_config).model.load(_model.restore_params(ref_model_dir / "params", dtype=jnp.bfloat16))
         ref_params = nnx.state(ref_model)
         ref_params_sharding = sharding.fsdp_sharding(ref_params, mesh, log=True)
+        ref_params = jax.device_put(ref_params, ref_params_sharding)
         ref_model_def = nnx.graphdef(ref_model)
         ptrain_step = jax.jit(
-            functools.partial(train_dpo, config),
+            functools.partial(train_tpo, config),
             in_shardings=(ref_params_sharding, None, replicated_sharding, train_state_sharding, data_sharding),
             out_shardings=(train_state_sharding, replicated_sharding),
             donate_argnums=(3,),

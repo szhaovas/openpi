@@ -69,12 +69,12 @@ class LazyPairDataset(Dataset[tuple[T_co, T_co]]):
             pairs: list[dict[str, int]], 
             positive_dataset: TransformedDataset, 
             negative_dataset: TransformedDataset,
-            max_seqlen: int = 16
+            num_devices: int
         ):
         self._pairs = pairs
         self._positive_dataset = positive_dataset
         self._negative_dataset = negative_dataset
-        self._max_seqlen = max_seqlen
+        self._num_devices = num_devices
 
         assert isinstance(self._positive_dataset._dataset._dataset, lerobot_dataset.LeRobotDataset)
         assert isinstance(self._negative_dataset._dataset._dataset, lerobot_dataset.LeRobotDataset)
@@ -89,25 +89,28 @@ class LazyPairDataset(Dataset[tuple[T_co, T_co]]):
     def __getitem__(self, index: SupportsIndex) -> tuple[T_co, T_co]:
         p = self._pairs[index]
 
+        # Adds pad_num all-zero rows to the current leaf
+        def _pad_by_num(pad_num, leaf):
+            pad_shape = np.zeros((leaf.ndim,2), dtype='int')
+            pad_shape[0,1] = pad_num
+            return jnp.pad(leaf, pad_shape)
+        
         # FIXME: p['success'] instead of p['success']-1
         success_start_idx = int(self._positive_ep_range['from'][p['success']-1].item())
         success_end_idx = int(self._positive_ep_range['to'][p['success']-1].item())
-        if success_end_idx-success_start_idx > self._max_seqlen:
-            success_idx = np.round(np.linspace(success_start_idx, success_end_idx-1, self._max_seqlen))
-        else:
-            success_idx = range(success_start_idx, success_end_idx)
+        success_pad_num = (success_end_idx-success_start_idx) % self._num_devices
+        success_batch = jax.tree.map(lambda *x: np.stack(list(x), axis=0), *[self._positive_dataset[int(i)] for i in range(success_start_idx, success_end_idx)])
+        if success_pad_num > 0:
+            success_batch = jax.tree.map(lambda x: _pad_by_num(success_pad_num, x), success_batch)
         
         fail_start_idx = int(self._negative_ep_range['from'][p['fail']-1].item())
         fail_end_idx = int(self._negative_ep_range['to'][p['fail']-1].item())
-        if fail_end_idx-fail_start_idx > self._max_seqlen:
-            fail_idx = np.round(np.linspace(fail_start_idx, fail_end_idx-1, self._max_seqlen))
-        else:
-            fail_idx = range(fail_start_idx, fail_end_idx)
+        fail_pad_num = (fail_end_idx-fail_start_idx) % self._num_devices
+        fail_batch = jax.tree.map(lambda *x: np.stack(list(x), axis=0), *[self._negative_dataset[int(i)] for i in range(fail_start_idx, fail_end_idx)])
+        if fail_pad_num > 0:
+            fail_batch = jax.tree.map(lambda x: _pad_by_num(fail_pad_num, x), fail_batch)
         
-        return (
-            jax.tree.map(lambda *x: np.stack(list(x), axis=0), *[self._positive_dataset[int(i)] for i in success_idx]),
-            jax.tree.map(lambda *x: np.stack(list(x), axis=0), *[self._negative_dataset[int(i)] for i in fail_idx])
-        )
+        return success_batch, fail_batch
 
 
 class IterableTransformedDataset(IterableDataset[T_co]):
@@ -404,7 +407,8 @@ def create_torch_pref_data_loader(
     pair_dataset = LazyPairDataset(
         pairs=pairs, 
         positive_dataset=success_dataset,
-        negative_dataset=fail_dataset
+        negative_dataset=fail_dataset,
+        num_devices=sharding.num_devices
     )
 
     data_loader = TorchDataLoader(

@@ -229,8 +229,15 @@ class Pi0FAST(_model.BaseModel):
         # Compute CE loss on token targets
         assert observation.token_loss_mask is not None, "Token loss mask is required"
         loss_mask = observation.token_loss_mask[:, 1:]
+        
         token_pplx = jnp.sum(targets * logp, axis=-1)
-        return -jnp.sum(token_pplx * loss_mask, axis=-1) / jnp.clip(jnp.sum(loss_mask, -1), 1)
+        loss = -jnp.sum(token_pplx * loss_mask, axis=-1) / jnp.clip(jnp.sum(loss_mask, -1), 1)
+
+        # Don't compute loss on padded rows
+        all_leaves_zero = jax.tree.map(lambda x: jnp.all(jnp.isclose(x, 0), axis=tuple(range(1, x.ndim))), observation)
+        padded_mask = ~jnp.all(jnp.stack(jax.tree.leaves(all_leaves_zero), axis=0), axis=0)
+
+        return loss * padded_mask
 
     @override
     def sample_actions(
