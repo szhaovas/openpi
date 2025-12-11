@@ -12,7 +12,7 @@ uv pip install -e third_party/libero
 ```
 
 ## Training
-```bash
+```python
 XLA_PYTHON_CLIENT_PREALLOCATE=false uv run scripts/train.py pi0_fast_libero_pref --exp-name=my_experiment --overwrite
 ```
 
@@ -26,5 +26,9 @@ uv pip install dash
 Within the LIBERO venv, run:
 ```python
 python viz_spatial_attack.py
+```
+Open a second terminal and run:
+```python
+uv run scripts/serve_policy.py --env LIBERO policy:checkpoint --policy.config pi0_fast_libero_pref --policy.dir <your_finetuned_checkpoint>
 ```
 This will display an interactive archive heatmap at `localhost:8050`. You can view it in the browser and click on a cell to save rollouts of that cell's solution to `interactive_vids`. If you are on ssh, you can also configure port forwarding to view and interact with heatmap on your own computer.
