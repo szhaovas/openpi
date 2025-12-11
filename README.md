@@ -12,20 +12,16 @@ uv pip install -e third_party/libero
 ```
 
 ## Training
-Download our preference learning dataset:
-```bash
-hf download shihanzh/qdpref --repo-type dataset
-```
-Start training:
 ```bash
 XLA_PYTHON_CLIENT_PREALLOCATE=false uv run scripts/train.py pi0_fast_libero_pref --exp-name=my_experiment --overwrite
 ```
 
 ## Visualization
-Needs to be run within the LIBERO venv. Make sure [dash](https://pypi.org/project/dash/) is installed:
+Download [CPLEX_Studio](https://drive.google.com/file/d/1Tktk-vV-HvyuSWAmTTHVikATFeqv5yL7/view?usp=sharing) and unzip to `third_party/CPLEX_Studio201`. Then install it and some other dependencies to the LIBERO venv:
 ```bash
 source examples/libero/.venv/bin/activate
-python -m pip install dash
+uv run third_party/CPLEX_Studio201/python/setup.py install
+uv pip install dash
 ```
 Within the LIBERO venv, run:
 ```python
