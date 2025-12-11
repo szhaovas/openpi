@@ -221,51 +221,47 @@ def train_tpo(
     ref_model_def: nnx.GraphDef[_model.BaseModel],
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
-    pair_batch: tuple[_model.Observation, _model.Observation],
+    trajectory: _model.Observation,
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
     ref_model = nnx.merge(ref_model_def, ref_params)
 
     @at.typecheck
-    def dpo_loss(
+    def tpo_loss(
         model: Pi0FAST, 
         ref_model: Pi0FAST, 
-        pair_observation: tuple[_model.Observation, _model.Observation], 
+        trajectory: _model.Observation, 
         rng: at.KeyArrayLike, 
         beta: float
     ):
-        rngs = jax.random.split(rng, 4)
+        rngs = jax.random.split(rng, 2)
         
         # CE loss is negative log-likelihood on step.
-        # Negate and sum across steps to get log-likelihood on trajectory
-        model_chosen_logp = jnp.sum(-model.compute_loss(rngs[0], pair_observation[0], None, train=True))
-        model_rejected_logp = jnp.sum(-model.compute_loss(rngs[1], pair_observation[1], None, train=True))
-        reference_chosen_logp = jnp.sum(-ref_model.compute_loss(rngs[2], pair_observation[0], None, train=True))
-        reference_rejected_logp = jnp.sum(-ref_model.compute_loss(rngs[3], pair_observation[1], None, train=True))
-        # TODO: add new failed trajs to dataset to see if it teaches TPO to avoid those
-        # TODO: data augmentation to get more pairs, e.g. different downsample, add noise
+        # Negate and average across steps to get log-likelihood on trajectory
+        model_logp = jnp.mean(-model.compute_loss(rngs[0], trajectory, None, train=True))
+        reference_logp = jnp.mean(-ref_model.compute_loss(rngs[1], trajectory, None, train=True))
 
-        chosen_logratio = model_chosen_logp - reference_chosen_logp
-        rejected_logratio = model_rejected_logp - reference_rejected_logp
-        logit = chosen_logratio - rejected_logratio
+        # If trajectory.success=False, this is a failed trajectory and should 
+        # be made less likely compared to reference
+        # NOTE: Using jnp.any because padded steps get trajectory.success=False 
+        # by default
+        sign = jnp.any(trajectory.success) * 2 - 1
+        logratio = sign * (model_logp - reference_logp)
 
         # log TPO components
         components = {
-            'model_chosen_logp': model_chosen_logp,
-            'model_rejected_logp': model_rejected_logp,
-            'reference_chosen_logp': reference_chosen_logp,
-            'reference_rejected_logp': reference_rejected_logp
+            'model_logp': model_logp,
+            'reference_logp': reference_logp,
         }
 
-        return -jax.nn.log_sigmoid(beta * logit), components
-        # return -model_chosen_logp
+        return -jax.nn.log_sigmoid(beta * logratio), components
 
     train_rng = jax.random.fold_in(rng, state.step)
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    (loss, aux_info), grads = nnx.value_and_grad(dpo_loss, argnums=diff_state, has_aux=True)(model, ref_model, pair_batch, train_rng, config.pref_beta)
+    (loss, aux_info), grads = nnx.value_and_grad(tpo_loss, argnums=diff_state, has_aux=True)(model, ref_model, trajectory, train_rng, config.pref_beta)
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -359,7 +355,6 @@ def main(config: _config.TrainConfig):
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
 
     if config.pref_mode:
-        # FIXME: For reference model, do we use libero norm stats or norm stats of our own pref dataset?
         ref_model_dir = download.maybe_download(str(config.ref_model_checkpoint))
         ref_model = _config.get_config(config.ref_model_config).model.load(_model.restore_params(ref_model_dir / "params", dtype=jnp.bfloat16))
         ref_params = nnx.state(ref_model)
@@ -392,7 +387,7 @@ def main(config: _config.TrainConfig):
     for step in pbar:
         with sharding.set_mesh(mesh):
             if config.pref_mode:
-                train_state, info = ptrain_step(ref_params, ref_model_def, train_rng, train_state, batch)
+                train_state, info = ptrain_step(ref_params, ref_model_def, train_rng, train_state, batch[0])
             else:
                 train_state, info = ptrain_step(train_rng, train_state, batch)
             # info['loss'].block_until_ready()

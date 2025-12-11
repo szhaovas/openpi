@@ -66,13 +66,6 @@ class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
     
-    # These are only used for preference learning.
-    # LeRobot repo id for dataset containing negative samples.
-    fail_repo_id: str | None = None
-    # JSONL file containing pairs of success and fail sample indices.
-    pair_filename: pathlib.Path | None = None
-    
-    
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -297,6 +290,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
                         "observation/state": "state",
                         "actions": "actions",
                         "prompt": "prompt",
+                        "success": "success"
                     }
                 )
             ]
@@ -408,7 +402,7 @@ class TrainConfig:
     exp_name: str = tyro.MISSING
 
     pref_mode: bool = False
-    pref_beta: float | None = 0.01
+    pref_beta: float | None = 0.05
     ref_model_checkpoint: str = "gs://openpi-assets/checkpoints/pi0_fast_libero"
     ref_model_config: str = "pi0_fast_libero"
 
@@ -648,21 +642,14 @@ _CONFIGS = [
         pref_mode=True,
         model=pi0_fast.Pi0FASTConfig(action_dim=7, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"),
         data=LeRobotLiberoDataConfig(
-            repo_id="pref/success",
+            repo_id="pref/all",
             assets=AssetsConfig(
-                # TODO: Currently using norm stats computed on the whole LIBERO 
-                # dataset since our dataset is too small. Once we get more 
-                # data we can use our own norm stats.
                 asset_id=""
             ),
-            base_config=DataConfig(
-                fail_repo_id="pref/fail",
-                pair_filename=pathlib.Path("pairs.jsonl"),
-                prompt_from_task=True
-            )
+            base_config=DataConfig(prompt_from_task=True)
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_libero/params"),
-        num_train_steps=200*16,
+        num_train_steps=400*16, # accumulate gradient update every 16 steps
         batch_size=16,
         log_interval=10*16,
         save_interval=200*16,

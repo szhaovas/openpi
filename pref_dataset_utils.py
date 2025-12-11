@@ -53,7 +53,8 @@ def _add_trajectory_to_dataset(
                 "wrist_image": wrist_image,
                 "state": state,
                 "actions": action[0], # FIXME: save only the current action
-                "task": trajectory.prompt
+                "task": trajectory.prompt,
+                "success": np.array([trajectory.success])
             }
         )
 
@@ -61,14 +62,9 @@ def _add_trajectory_to_dataset(
     
 
 def generate_all_train_assets(
-    scheduler_path: str = "test_logs/scheduler_00001000", 
-    success_repo_id: str = "pref/success", 
-    fail_repo_id: str = "pref/fail", 
-    pair_savepath: str = "pairs.jsonl"
+    scheduler_path: str = "test_logs/scheduler_00001000.pkl", 
+    repo_id: str = "pref/all"
 ) -> None:
-    """Assembles preference pairs each consisted of a success and fail rollout 
-    trajectory, and saves all pairs to a JSONL file.
-    """
     with open(file=scheduler_path, mode="rb") as archive_file:
         archive = pkl.load(archive_file).result_archive
         
@@ -92,19 +88,16 @@ def generate_all_train_assets(
                 "dtype": "float64",
                 "shape": (7,),
                 "names": ["actions"],
+            },
+            "success": {
+                "dtype": "bool",
+                "shape": (1,),
+                "names": ["success"],
             }
         }
 
-        success_dataset: LeRobotDataset = LeRobotDataset.create(
-            repo_id=success_repo_id,
-            robot_type="panda",
-            fps=10,
-            features=dataset_features,
-            image_writer_threads=10,
-            image_writer_processes=5,
-        )
-        fail_dataset: LeRobotDataset = LeRobotDataset.create(
-            repo_id=fail_repo_id,
+        dataset: LeRobotDataset = LeRobotDataset.create(
+            repo_id=repo_id,
             robot_type="panda",
             fps=10,
             features=dataset_features,
@@ -112,45 +105,25 @@ def generate_all_train_assets(
             image_writer_processes=5,
         )
 
-        success_episode_counter = 0
-        fail_episode_counter = 0
-        pairs: List[Dict[str, int]] = []
         for cell in tqdm(archive): 
-            success_traj_idx: List[int] = []
-            fail_traj_idx: List[int] = []
-            for traj in cell["trajectories"]:
-                if traj.success:
-                    with _suppress_tqdm():
-                        _add_trajectory_to_dataset(
-                            traj,
-                            success_dataset
-                        )
-                    success_traj_idx.append(success_episode_counter)
-                    success_episode_counter += 1
-                else:
-                    with _suppress_tqdm():
-                        _add_trajectory_to_dataset(
-                            traj,
-                            fail_dataset
-                        )
-                    fail_traj_idx.append(fail_episode_counter)
-                    fail_episode_counter += 1
-
-            # All success or all fail, no pair
-            if len(success_traj_idx) == 0 or len(fail_traj_idx) == 0:
+            # If all trajectories in the cell failed, we see the cell's stored 
+            # env as infeasible and do not include its trajectories into the 
+            # finetune dataset
+            if (
+                cell['objective'] < 1e-5
+                # TODO: Do we include cells in which all trajectories succeeded?
+                and not cell["trajectories"][0].success
+            ):
                 continue
-            
-            # Add all pairs of success and fail trajectories from the same cell
-            # Save both archive cell idx and traectory idx for later access
-            for success_idx, fail_idx in product(success_traj_idx, fail_traj_idx):
-                pairs.append({"success": success_idx, "fail": fail_idx})
 
-        with open(pair_savepath, "w") as pair_file:
-            for p in pairs:
-                pair_file.write(json.dumps(p) + "\n")
+            for traj in cell["trajectories"]:
+                with _suppress_tqdm():
+                    _add_trajectory_to_dataset(
+                        traj,
+                        dataset
+                    )
 
-        print(f"Updated success rollout dataset at {HF_LEROBOT_HOME / success_repo_id}")
-        print(f"Updated fail rollout dataset at {HF_LEROBOT_HOME / fail_repo_id}")
+        print(f"Updated rollout dataset at {HF_LEROBOT_HOME / repo_id}")
 
 if __name__ == '__main__':
     # python pref_dataset_utils.py --scheduler_path=test_logs/scheduler_00000020.pkl

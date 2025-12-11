@@ -63,54 +63,38 @@ class TransformedDataset(Dataset[T_co]):
         return len(self._dataset)
         
     
-class LazyPairDataset(Dataset[tuple[T_co, T_co]]):
+class TrajectoryDataset(Dataset[tuple[T_co, T_co]]):
     def __init__(
             self, 
-            pairs: list[dict[str, int]], 
-            positive_dataset: TransformedDataset, 
-            negative_dataset: TransformedDataset,
-            num_devices: int
+            step_dataset: TransformedDataset, 
         ):
-        self._pairs = pairs
-        self._positive_dataset = positive_dataset
-        self._negative_dataset = negative_dataset
-        self._num_devices = num_devices
+        self._step_dataset = step_dataset
 
-        assert isinstance(self._positive_dataset._dataset._dataset, lerobot_dataset.LeRobotDataset)
-        assert isinstance(self._negative_dataset._dataset._dataset, lerobot_dataset.LeRobotDataset)
+        assert isinstance(self._step_dataset._dataset._dataset, lerobot_dataset.LeRobotDataset)
 
-        self._positive_ep_range = self._positive_dataset._dataset._dataset.episode_data_index
-        self._negative_ep_range = self._negative_dataset._dataset._dataset.episode_data_index
+        self._ep_ranges = self._step_dataset._dataset._dataset.episode_data_index
         
 
     def __len__(self) -> int:
-        return len(self._pairs)
+        return len(self._step_dataset._dataset._dataset.meta.episodes)
 
     def __getitem__(self, index: SupportsIndex) -> tuple[T_co, T_co]:
-        p = self._pairs[index]
-
         # Adds pad_num all-zero rows to the current leaf
         def _pad_by_num(pad_num, leaf):
             pad_shape = np.zeros((leaf.ndim,2), dtype='int')
             pad_shape[0,1] = pad_num
             return jnp.pad(leaf, pad_shape)
         
-        # FIXME: p['success'] instead of p['success']-1
-        success_start_idx = int(self._positive_ep_range['from'][p['success']-1].item())
-        success_end_idx = int(self._positive_ep_range['to'][p['success']-1].item())
-        success_pad_num = (success_end_idx-success_start_idx) % self._num_devices
-        success_batch = jax.tree.map(lambda *x: np.stack(list(x), axis=0), *[self._positive_dataset[int(i)] for i in range(success_start_idx, success_end_idx)])
-        if success_pad_num > 0:
-            success_batch = jax.tree.map(lambda x: _pad_by_num(success_pad_num, x), success_batch)
+        start_idx = int(self._ep_ranges['from'][index].item())
+        end_idx = int(self._ep_ranges['to'][index].item())
+        # FIXME: 44 is the longest possible trajectory for LIBERO-Spatial, 
+        # make this a parameter
+        pad_num = 44 - (end_idx-start_idx)
+        episode = jax.tree.map(lambda *x: np.stack(list(x), axis=0), *[self._step_dataset[int(i)] for i in range(start_idx, end_idx)])
+        if pad_num > 0:
+            episode = jax.tree.map(lambda x: _pad_by_num(pad_num, x), episode)
         
-        fail_start_idx = int(self._negative_ep_range['from'][p['fail']-1].item())
-        fail_end_idx = int(self._negative_ep_range['to'][p['fail']-1].item())
-        fail_pad_num = (fail_end_idx-fail_start_idx) % self._num_devices
-        fail_batch = jax.tree.map(lambda *x: np.stack(list(x), axis=0), *[self._negative_dataset[int(i)] for i in range(fail_start_idx, fail_end_idx)])
-        if fail_pad_num > 0:
-            fail_batch = jax.tree.map(lambda x: _pad_by_num(fail_pad_num, x), fail_batch)
-        
-        return success_batch, fail_batch
+        return episode
 
 
 class IterableTransformedDataset(IterableDataset[T_co]):
@@ -199,20 +183,8 @@ def create_torch_dataset(
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
-    
-    fail_dataset = None
-    if data_config.fail_repo_id is not None:
-        fail_dataset = lerobot_dataset.LeRobotDataset(
-            data_config.fail_repo_id,
-            delta_timestamps={
-                key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
-            },
-        )
 
-        if data_config.prompt_from_task:
-            fail_dataset = TransformedDataset(fail_dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
-
-    return dataset, fail_dataset
+    return dataset
 
 
 def create_rlds_dataset(
@@ -304,7 +276,7 @@ def create_data_loader(
             num_batches=num_batches,
             skip_norm_stats=skip_norm_stats,
         )
-    elif data_config.fail_repo_id is not None:
+    elif config.pref_mode is not None:
         return create_torch_pref_data_loader(
             data_config,
             model_config=config.model,
@@ -361,7 +333,7 @@ def create_torch_data_loader(
             execute in the main process.
         seed: The seed to use for shuffling the data.
     """
-    dataset, _ = create_torch_dataset(data_config, action_horizon, model_config)
+    dataset = create_torch_dataset(data_config, action_horizon, model_config)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
     data_loader = TorchDataLoader(
@@ -389,30 +361,13 @@ def create_torch_pref_data_loader(
     num_workers: int = 0,
     seed: int = 0,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
-    assert data_config.fail_repo_id is not None, (
-        "DataConfig.fail_repo_id cannot be None for preference learning."
-    )
-    success_dataset, fail_dataset = create_torch_dataset(data_config, action_horizon, model_config)
+    step_dataset = create_torch_dataset(data_config, action_horizon, model_config)
+    step_dataset = transform_dataset(step_dataset, data_config, skip_norm_stats=skip_norm_stats)
 
-    success_dataset = transform_dataset(success_dataset, data_config, skip_norm_stats=skip_norm_stats)
-    fail_dataset = transform_dataset(fail_dataset, data_config, skip_norm_stats=skip_norm_stats)
-
-    assert data_config.pair_filename is not None, (
-        "DataConfig.pair_filename cannot be None for preference learning."
-    )
-
-    with open(data_config.pair_filename) as pair_file:
-        pairs = [json.loads(line) for line in pair_file]
-
-    pair_dataset = LazyPairDataset(
-        pairs=pairs, 
-        positive_dataset=success_dataset,
-        negative_dataset=fail_dataset,
-        num_devices=sharding.num_devices
-    )
+    traj_dataset = TrajectoryDataset(step_dataset=step_dataset)
 
     data_loader = TorchDataLoader(
-        pair_dataset,
+        traj_dataset,
         local_batch_size=1,
         sharding=sharding,
         shuffle=shuffle,
@@ -518,7 +473,7 @@ class TorchDataLoader:
             num_workers=num_workers,
             multiprocessing_context=mp_context,
             persistent_workers=num_workers > 0,
-            collate_fn=_collate_fn if not isinstance(dataset, LazyPairDataset) else _dummy_collate,
+            collate_fn=_collate_fn if not isinstance(dataset, TrajectoryDataset) else _dummy_collate,
             worker_init_fn=_worker_init_fn,
             drop_last=True,
             generator=generator,
@@ -551,7 +506,7 @@ def _collate_fn(items):
 
 
 def _dummy_collate(items):
-    return items
+    return items[0]
 
 
 def _worker_init_fn(worker_id: int) -> None:
@@ -616,10 +571,4 @@ class DataLoaderImpl(DataLoader):
 
     def __iter__(self):
         for batch in self._data_loader:
-            if self._data_config.fail_repo_id is None:
-                yield _model.Observation.from_dict(batch), batch["actions"]
-            else:
-                yield (
-                    _model.Observation.from_dict(batch[0][0]), 
-                    _model.Observation.from_dict(batch[0][1])
-                )
+            yield _model.Observation.from_dict(batch), batch["actions"]
