@@ -63,7 +63,7 @@ def _add_trajectory_to_dataset(
 
 def generate_all_train_assets(
     scheduler_path: str = "test_logs/scheduler_00001000.pkl", 
-    repo_id: str = "pref/all"
+    repo_id: str = "shihanzh/qdpref/all"
 ) -> None:
     with open(file=scheduler_path, mode="rb") as archive_file:
         archive = pkl.load(archive_file).result_archive

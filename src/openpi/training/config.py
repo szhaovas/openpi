@@ -642,7 +642,7 @@ _CONFIGS = [
         pref_mode=True,
         model=pi0_fast.Pi0FASTConfig(action_dim=7, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"),
         data=LeRobotLiberoDataConfig(
-            repo_id="pref/all",
+            repo_id="shihanzh/qdpref/all",
             assets=AssetsConfig(
                 asset_id=""
             ),
