@@ -12,11 +12,14 @@ uv pip install -e third_party/libero
 ```
 
 ## Training
+<!-- (FIXME: Need to figure out how to convert our dataset to v2 to allow automatic download) -->
+Download [our dataset](https://huggingface.co/datasets/physical-intelligence/libero) and move it under `~/.cache/huggingface/lerobot/`. Create parent directories if they don't exist.
 ```python
 XLA_PYTHON_CLIENT_PREALLOCATE=false uv run scripts/train.py pi0_fast_libero_pref --exp-name=my_experiment --overwrite
 ```
 
 ## Visualization
+<!-- (FIXME: Might have copyright issues) -->
 Download [CPLEX_Studio](https://drive.google.com/file/d/1Tktk-vV-HvyuSWAmTTHVikATFeqv5yL7/view?usp=sharing) and unzip to `third_party/CPLEX_Studio201`. Then install it and some other dependencies to the LIBERO venv:
 ```bash
 source examples/libero/.venv/bin/activate
