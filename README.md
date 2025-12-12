@@ -13,7 +13,7 @@ uv pip install -e third_party/libero
 
 ## Training
 <!-- (FIXME: Need to figure out how to convert our dataset to v2 to allow automatic download) -->
-Download [our dataset](https://huggingface.co/datasets/physical-intelligence/libero) and move it under `~/.cache/huggingface/lerobot/`. Create parent directories if they don't exist.
+Download [our dataset](https://huggingface.co/datasets/shihanzh/qdpref) and move it under `~/.cache/huggingface/lerobot/`. Create parent directories if they don't exist.
 ```python
 XLA_PYTHON_CLIENT_PREALLOCATE=false uv run scripts/train.py pi0_fast_libero_pref --exp-name=my_experiment --overwrite
 ```
