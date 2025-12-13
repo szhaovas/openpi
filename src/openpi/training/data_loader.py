@@ -7,6 +7,7 @@ from typing import Protocol, SupportsIndex, TypeVar
 import jax
 import jax.numpy as jnp
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+from lerobot.common.constants import HF_LEROBOT_HOME
 import numpy as np
 import torch
 
@@ -63,38 +64,53 @@ class TransformedDataset(Dataset[T_co]):
         return len(self._dataset)
         
     
-class TrajectoryDataset(Dataset[tuple[T_co, T_co]]):
+class TrajectoryDataset(Dataset[tuple[T_co]]):
     def __init__(
-            self, 
-            step_dataset: TransformedDataset, 
-        ):
+        self, 
+        step_dataset: TransformedDataset, 
+        num_devices: int
+    ):
         self._step_dataset = step_dataset
-
-        assert isinstance(self._step_dataset._dataset._dataset, lerobot_dataset.LeRobotDataset)
-
+        self._num_devices = num_devices
         self._ep_ranges = self._step_dataset._dataset._dataset.episode_data_index
-        
 
     def __len__(self) -> int:
         return len(self._step_dataset._dataset._dataset.meta.episodes)
 
     def __getitem__(self, index: SupportsIndex) -> tuple[T_co, T_co]:
-        # Adds pad_num all-zero rows to the current leaf
         def _pad_by_num(pad_num, leaf):
+            """Adds pad_num all-zero rows to the current leaf"""
             pad_shape = np.zeros((leaf.ndim,2), dtype='int')
             pad_shape[0,1] = pad_num
             return jnp.pad(leaf, pad_shape)
         
         start_idx = int(self._ep_ranges['from'][index].item())
         end_idx = int(self._ep_ranges['to'][index].item())
-        # FIXME: 44 is the longest possible trajectory for LIBERO-Spatial, 
-        # make this a parameter
-        pad_num = 44 - (end_idx-start_idx)
+        # Pad to make sure trajectory length is divisible by number of devices
+        # This is required by fsdp
+        pad_num = (end_idx-start_idx) % self._num_devices
         episode = jax.tree.map(lambda *x: np.stack(list(x), axis=0), *[self._step_dataset[int(i)] for i in range(start_idx, end_idx)])
         if pad_num > 0:
             episode = jax.tree.map(lambda x: _pad_by_num(pad_num, x), episode)
         
         return episode
+
+
+class PairDataset(Dataset[tuple[T_co, T_co]]):
+    def __init__(
+        self, 
+        pairs: list[dict[str, int]], 
+        traj_dataset: TrajectoryDataset
+    ):
+        self._pairs = pairs
+        self._traj_dataset = traj_dataset
+
+    def __len__(self) -> int:
+        return len(self._pairs)
+
+    def __getitem__(self, index: SupportsIndex) -> tuple[T_co, T_co]:
+        p = self._pairs[index]
+        return self._traj_dataset[p['success']], self._traj_dataset[p['fail']]
 
 
 class IterableTransformedDataset(IterableDataset[T_co]):
@@ -276,7 +292,7 @@ def create_data_loader(
             num_batches=num_batches,
             skip_norm_stats=skip_norm_stats,
         )
-    elif config.pref_mode is not None:
+    elif config.pref_mode:
         return create_torch_pref_data_loader(
             data_config,
             model_config=config.model,
@@ -364,10 +380,19 @@ def create_torch_pref_data_loader(
     step_dataset = create_torch_dataset(data_config, action_horizon, model_config)
     step_dataset = transform_dataset(step_dataset, data_config, skip_norm_stats=skip_norm_stats)
 
-    traj_dataset = TrajectoryDataset(step_dataset=step_dataset)
+    with open(HF_LEROBOT_HOME / data_config.repo_id / 'pairs.jsonl') as pair_file:
+        pairs = [json.loads(line) for line in pair_file]
+
+    pair_dataset = PairDataset(
+        pairs = pairs,
+        traj_dataset = TrajectoryDataset(
+            step_dataset=step_dataset, 
+            num_devices=sharding.num_devices
+        )
+    )
 
     data_loader = TorchDataLoader(
-        traj_dataset,
+        pair_dataset,
         local_batch_size=1,
         sharding=sharding,
         shuffle=shuffle,
@@ -473,7 +498,7 @@ class TorchDataLoader:
             num_workers=num_workers,
             multiprocessing_context=mp_context,
             persistent_workers=num_workers > 0,
-            collate_fn=_collate_fn if not isinstance(dataset, TrajectoryDataset) else _dummy_collate,
+            collate_fn=_collate_fn if not isinstance(dataset, PairDataset) else _dummy_collate,
             worker_init_fn=_worker_init_fn,
             drop_last=True,
             generator=generator,
@@ -571,4 +596,10 @@ class DataLoaderImpl(DataLoader):
 
     def __iter__(self):
         for batch in self._data_loader:
-            yield _model.Observation.from_dict(batch), batch["actions"]
+            if isinstance(self._data_loader._data_loader.dataset, PairDataset):
+                yield (
+                    _model.Observation.from_dict(batch[0]), 
+                    _model.Observation.from_dict(batch[1])
+                )
+            else:
+                yield _model.Observation.from_dict(batch), batch["actions"]

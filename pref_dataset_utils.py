@@ -53,8 +53,7 @@ def _add_trajectory_to_dataset(
                 "wrist_image": wrist_image,
                 "state": state,
                 "actions": action[0], # FIXME: save only the current action
-                "task": trajectory.prompt,
-                "success": np.array([trajectory.success])
+                "task": trajectory.prompt
             }
         )
 
@@ -89,11 +88,6 @@ def generate_all_train_assets(
                 "shape": (7,),
                 "names": ["actions"],
             },
-            "success": {
-                "dtype": "bool",
-                "shape": (1,),
-                "names": ["success"],
-            }
         }
 
         dataset: LeRobotDataset = LeRobotDataset.create(
@@ -105,6 +99,9 @@ def generate_all_train_assets(
             image_writer_processes=5,
         )
 
+        traj_counter = 0
+        success_traj_idx = []
+        fail_traj_idx = []
         for cell in tqdm(archive): 
             # If all trajectories in the cell failed, we see the cell's stored 
             # env as infeasible and do not include its trajectories into the 
@@ -112,7 +109,7 @@ def generate_all_train_assets(
             if (
                 cell['objective'] < 1e-5
                 # TODO: Do we include cells in which all trajectories succeeded?
-                and not cell["trajectories"][0].success
+                # and not cell["trajectories"][0].success
             ):
                 continue
 
@@ -123,7 +120,18 @@ def generate_all_train_assets(
                         dataset
                     )
 
-        print(f"Updated rollout dataset at {HF_LEROBOT_HOME / repo_id}")
+                if traj.success:
+                    success_traj_idx.append(traj_counter)
+                else:
+                    fail_traj_idx.append(traj_counter)
+
+                traj_counter += 1
+
+        with open(HF_LEROBOT_HOME / repo_id / 'pairs.jsonl', "w") as pair_file:
+            for sid, fid in product(success_traj_idx, fail_traj_idx):
+                pair_file.write(json.dumps({"success": sid, "fail": fid}) + "\n")
+
+        print(f"Saved pref dataset to {HF_LEROBOT_HOME / repo_id}")
 
 if __name__ == '__main__':
     # python pref_dataset_utils.py --scheduler_path=test_logs/scheduler_00000020.pkl

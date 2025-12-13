@@ -221,7 +221,7 @@ def train_tpo(
     ref_model_def: nnx.GraphDef[_model.BaseModel],
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
-    trajectory: _model.Observation,
+    pair_traj: tuple[_model.Observation, _model.Observation]
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
@@ -231,37 +231,38 @@ def train_tpo(
     def tpo_loss(
         model: Pi0FAST, 
         ref_model: Pi0FAST, 
-        trajectory: _model.Observation, 
+        pair_traj: tuple[_model.Observation, _model.Observation], 
         rng: at.KeyArrayLike, 
         beta: float
     ):
-        rngs = jax.random.split(rng, 2)
+        rngs = jax.random.split(rng, 4)
         
         # CE loss is negative log-likelihood on step.
         # Negate and average across steps to get log-likelihood on trajectory
-        model_logp = jnp.mean(-model.compute_loss(rngs[0], trajectory, None, train=True))
-        reference_logp = jnp.mean(-ref_model.compute_loss(rngs[1], trajectory, None, train=True))
+        model_chosen_logp = jnp.mean(-model.compute_loss(rngs[0], pair_traj[0], None, train=True))
+        model_rejected_logp = jnp.mean(-model.compute_loss(rngs[1], pair_traj[1], None, train=True))
+        reference_chosen_logp = jnp.mean(-ref_model.compute_loss(rngs[2], pair_traj[0], None, train=True))
+        reference_rejected_logp = jnp.mean(-ref_model.compute_loss(rngs[3], pair_traj[1], None, train=True))
 
-        # If trajectory.success=False, this is a failed trajectory and should 
-        # be made less likely compared to reference
-        # NOTE: Using jnp.any because padded steps get trajectory.success=False 
-        # by default
-        sign = jnp.any(trajectory.success) * 2 - 1
-        logratio = sign * (model_logp - reference_logp)
+        chosen_logratio = model_chosen_logp - reference_chosen_logp
+        rejected_logratio = model_rejected_logp - reference_rejected_logp
+        logit = chosen_logratio - rejected_logratio
 
         # log TPO components
         components = {
-            'model_logp': model_logp,
-            'reference_logp': reference_logp,
+            'model_chosen_logp': model_chosen_logp,
+            'model_rejected_logp': model_rejected_logp,
+            'reference_chosen_logp': reference_chosen_logp,
+            'reference_rejected_logp': reference_rejected_logp
         }
 
-        return -jax.nn.log_sigmoid(beta * logratio), components
+        return -jax.nn.log_sigmoid(beta * logit), components
 
     train_rng = jax.random.fold_in(rng, state.step)
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    (loss, aux_info), grads = nnx.value_and_grad(tpo_loss, argnums=diff_state, has_aux=True)(model, ref_model, trajectory, train_rng, config.pref_beta)
+    (loss, aux_info), grads = nnx.value_and_grad(tpo_loss, argnums=diff_state, has_aux=True)(model, ref_model, pair_traj, train_rng, config.pref_beta)
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -387,7 +388,7 @@ def main(config: _config.TrainConfig):
     for step in pbar:
         with sharding.set_mesh(mesh):
             if config.pref_mode:
-                train_state, info = ptrain_step(ref_params, ref_model_def, train_rng, train_state, batch[0])
+                train_state, info = ptrain_step(ref_params, ref_model_def, train_rng, train_state, batch)
             else:
                 train_state, info = ptrain_step(train_rng, train_state, batch)
             # info['loss'].block_until_ready()

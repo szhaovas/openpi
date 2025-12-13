@@ -97,9 +97,6 @@ class LiberoInputs(transforms.DataTransformFn):
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
 
-        if "success" in data:
-            inputs["success"] = data["success"]
-
         return inputs
 
 
