@@ -110,7 +110,7 @@ class PairDataset(Dataset[tuple[T_co, T_co]]):
 
     def __getitem__(self, index: SupportsIndex) -> tuple[T_co, T_co]:
         p = self._pairs[index]
-        return self._traj_dataset[p['success']], self._traj_dataset[p['fail']]
+        return self._traj_dataset[p['chosen']], self._traj_dataset[p['rejected']]
 
 
 class IterableTransformedDataset(IterableDataset[T_co]):

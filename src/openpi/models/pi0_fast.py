@@ -278,7 +278,7 @@ class Pi0FAST(_model.BaseModel):
         output_tokens = jnp.zeros((last_logit.shape[0], max_decoding_steps))
 
         def step(carry):
-            rng, last_logit, output_tokens, cache, _, step = carry
+            rng, last_logit, output_tokens, cache, _, step, total_logprob = carry
 
             # Sample token from last logit
             # Split RNG for this step
@@ -306,15 +306,26 @@ class Pi0FAST(_model.BaseModel):
             last_logit, kv_cache, _ = self.PaliGemma.llm(
                 embedded_prefix=token_embedding, mask=mask, positions=positions, decode=True, kv_cache=cache
             )
+            
+            log_probs = jax.nn.log_softmax(last_logit, axis=-1)
+            chosen_log_prob = jnp.take_along_axis(
+                log_probs,
+                token[..., None],
+                axis=-1
+            ).squeeze(-1)
+            total_logprob += chosen_log_prob
 
-            return rng, last_logit, output_tokens, kv_cache, all_eos, step + 1
+            return rng, last_logit, output_tokens, kv_cache, all_eos, step + 1, total_logprob
 
         def cond(carry):
-            _, _, _, _, all_eos, step = carry
+            _, _, _, _, all_eos, step, _ = carry
             return (~all_eos) & (step < max_decoding_steps)
 
         # Use lax.while_loop so we can jit the full decoding loop.
-        _, _, output_tokens, _, _, _ = jax.lax.while_loop(
-            cond, step, (rng, last_logit, output_tokens, kv_cache, False, 0)
+        _, _, output_tokens, _, _, total_steps, total_logprob = jax.lax.while_loop(
+            cond, step, (rng, last_logit, output_tokens, kv_cache, False, 0, jnp.zeros((1,1)))
         )
+        
+        jax.debug.print('{}', total_logprob / total_steps)
+        
         return output_tokens
