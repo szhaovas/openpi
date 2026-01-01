@@ -12,7 +12,7 @@ import imageio
 import matplotlib.pyplot as plt
 import numpy as np
 from dask.distributed import Client, LocalCluster
-from libero.libero import get_libero_path
+from libero.libero import benchmark
 from libero.libero.envs import OffScreenRenderEnv
 from openpi_client import websocket_client_policy as _websocket_client_policy
 from ribs.archives import GridArchive
@@ -23,17 +23,23 @@ from ribs.visualize import grid_archive_heatmap
 from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
 
-task_5_bddl = (
-    Path(get_libero_path("bddl_files"))
-    / "custom"
-    / "pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate.bddl"
-)
-TASK_ENV = partial(
-    OffScreenRenderEnv,
-    bddl_file_name=task_5_bddl,
-    camera_heights=256,
-    camera_widths=256,
-)
+
+benchmark_dict = benchmark.get_benchmark_dict()
+custom_task_suite = benchmark_dict['custom']()
+task_id = 7 # which task to run the QD loop on
+
+bowl_starting_xy = [
+    [-0.075, 0.0, 0.01, 0.31], 
+    [0.01, 0.31, -0.18, 0.32], 
+    [-0.20, 0.20, 0.07, 0.03], 
+    [-0.18, 0.32, 0.13, -0.07], 
+    [0.07, 0.03, 0.03, -0.27], 
+    [-0.41, -0.14, 0.03, -0.27], 
+    [0.13, -0.07, -0.41, -0.14], 
+    [-0.05, 0.20, -0.18, 0.32], 
+    [0.08, -0.15, 0.03, -0.27], 
+    [0.03, -0.27, -0.41, -0.14],
+]
 
 host = "0.0.0.0"
 port = 8000
@@ -47,6 +53,13 @@ replan_steps = 5
 # action_horizon = 50
 action_dim = 7
 state_dim = 8
+
+TASK_ENV = partial(
+    OffScreenRenderEnv,
+    bddl_file_name=custom_task_suite.tasks[task_id].bddl_file,
+    camera_heights=256,
+    camera_widths=256,
+)
 
 @dataclass
 class Trajectory:
@@ -145,7 +158,7 @@ def evaluate(params: np.ndarray, ntrials: int, seed: int, video_logdir: Optional
     obs = env.reset()
     if obs is None:
         # TODO: How to handle solutions that fail to evaluate
-        return 1e-6, 0, 0, None
+        return 1e-6, 0, 0, 0, None
 
     if video_logdir is not None:
         # ID each sol with datetime to prevent overwriting
@@ -315,9 +328,9 @@ def save_heatmap(archive, heatmap_path):
     plt.close(plt.gcf())
 
 def main(
-    iterations=20,
-    num_trials_per_sol=4,
-    batch_size=8,
+    iterations=10,
+    num_trials_per_sol=2,
+    batch_size=2,
     num_emitters=1,
     archive_resolution=[100,100],
     seed=42,
@@ -364,11 +377,12 @@ def main(
             }
         )
 
+        x0 = bowl_starting_xy[task_id] + [0.07, 0.03, -0.20, 0.20, 0.06, 0.20, 1, 1, 4, 0.66, 0, 1.61, 0.5, 0.5, 0.5]
         emitters = [
             EvolutionStrategyEmitter(
                 archive=main_archive,
                 # Range centers copied from BDDL file
-                x0=[-0.18, 0.32, 0.13, -0.07, 0.07, 0.03, -0.20, 0.20, 0.06, 0.20, 1, 1, 4, 0.66, 0, 1.61, 0.5, 0.5, 0.5],
+                x0=x0,
                 sigma0=0.02,
                 # TODO: Define bounds if we want to stay close to the original BDDL
                 bounds=None,
