@@ -1,0 +1,9 @@
+archive:
+  _target_: experiments.myribs.archives.LoggingArchive
+  starting_cells: ${oc.mul:${qd_search_itr}, ${qd.emitter.batch_size}, ${oc.len:eval.task_ids}, ${eval.task_eval.num_trials_per_sol}} # Same evaluation budget as qd
+  measure_dim: 2
+
+emitter:
+  _target_: ribs.emitters.GaussianEmitter
+  sigma: 0.4
+  batch_size: 2

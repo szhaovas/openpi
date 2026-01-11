@@ -1,0 +1,14 @@
+archive:
+  _target_: ribs.archives.GridArchive
+  dims: [100, 100]
+  ranges: [[0,1], [0,1]]
+  learning_rate: 0.1
+  threshold_min: 0
+  seed: ${seed}
+
+emitter:
+  # _target_: experiments.myribs.emitters.EvolutionStrategyEmitterExternal
+  _target_: ribs.emitters.EvolutionStrategyEmitter
+  sigma0: 0.02
+  batch_size: 2
+  seed: ${seed}

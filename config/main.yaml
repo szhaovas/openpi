@@ -1,0 +1,13 @@
+defaults:
+  - _self_
+  - qd: domain_randomization
+  - eval: libero_spatial
+
+hydra:
+  run:
+    dir: ./outputs/${hydra:runtime.choices.qd}/${hydra:runtime.choices.eval}/${now:%Y-%m-%d_%H%M%S}
+
+qd_search_itr: 10
+reload_qd_scheduler_from: null
+qd_search_log_every: 10
+seed: 42
