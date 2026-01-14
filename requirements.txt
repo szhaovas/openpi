@@ -425,4 +425,11 @@ zipp==3.19.2
     #   etils
     #   importlib-metadata
 lerobot==0.3.2
+datasets==3.6.0
+pyarrow==22.0.0
+multiprocess==0.70.16
+dill==0.3.8
+xxhash==3.6.0
+jsonlines==4.0.0
+av==16.1.0
 -e libero/

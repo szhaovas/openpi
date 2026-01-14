@@ -1,6 +1,5 @@
 __pycache__/
 .venv/
 CPLEX_Studio201/
-openpi/
 outputs/
 uv.lock
