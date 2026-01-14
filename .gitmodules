@@ -1,6 +1,0 @@
-[submodule "openpi"]
-	path = openpi
-	url = https://github.com/Physical-Intelligence/openpi
-[submodule "libero"]
-	path = libero
-	url = https://github.com/szhaovas/LIBERO.git
