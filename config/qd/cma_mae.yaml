@@ -17,3 +17,4 @@ scheduler:
   # _target_: src.myribs.schedulers.SchedulerExternal
   _target_: src.myribs.schedulers.BanditSchedulerExternal
   num_active: 2
+  zeta: 0.5

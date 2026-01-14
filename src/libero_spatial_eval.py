@@ -10,9 +10,9 @@ from typing import Dict, List, Optional, Tuple
 import imageio
 import numpy as np
 from dask.distributed import Client
+from libero.libero.envs import OffScreenRenderEnv
 
 from libero.libero import benchmark
-from libero.libero.envs import OffScreenRenderEnv
 from src.vla_client.websocket_client_policy import WebsocketClientPolicy
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,9 @@ def get_default_env_params(task_id=0):
     #       plate_1_x, plate_1_y,
     #       light_x, light_y, light_z
     #       camera_x, camera_y, camera_z,
-    #       table_r, table_g, table_b
+    #       table_r, table_g, table_b,
+    #       camera_r1, camera_r2, camera_r3,
+    #       light_spec_r, light_spec_g, light_spec_b,
     #   ]
     # These starting params are derived from default libero-spatial
     bowl_starting_xy = [
@@ -55,15 +57,21 @@ def get_default_env_params(task_id=0):
         0.20,
         0.06,
         0.20,
-        1,
-        1,
-        4,
+        1.0,
+        1.0,
+        4.0,
         0.66,
         0,
         1.61,
         0.5,
         0.5,
         0.5,
+        0.0,
+        0.0,
+        0.0,
+        0.3,
+        0.3,
+        0.3,
     ]
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-NUM_SERVERS=4 # This should be the same as cfg["eval"]["num_trials_per_sol"]
+NUM_SERVERS=3 # This should be the same as cfg["eval"]["num_trials_per_sol"]
 SESSION=openpi-libero
 
 # Check if session exists
