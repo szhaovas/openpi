@@ -1,6 +1,6 @@
 ## Installation
 ```bash
-git clone --recurse-submodules -b pref_learning https://github.com/szhaovas/openpi.git
+git clone --recurse-submodules https://github.com/szhaovas/openpi.git
 cd openpi
 ```
 
@@ -25,6 +25,7 @@ python CPLEX_Studio201/python/setup.py install
 ```bash
 ./run_qd_search.sh
 ```
+Change the `NUM_SERVERS` field in `run_qd_search.sh` to the number of GPUs you wish to use to host VLA servers. By default, this is also the number of times each generated environment will be evaluated.
 
 ## Finetune
 <!-- TODO: Add instructions for computing norm stats -->

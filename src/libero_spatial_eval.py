@@ -215,7 +215,7 @@ class LiberoSpatialEval:
             for trial_id in range(self.num_trials_per_sol):
                 succ, traj = rollout(
                     env_params=repaired_solution,
-                    vla_client_port=8000 + trial_id,
+                    vla_client_port=8000,
                     eval_stub=self._eval_stub,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
