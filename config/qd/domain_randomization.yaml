@@ -7,3 +7,6 @@ emitter:
   _target_: ribs.emitters.GaussianEmitter
   sigma: 0.1
   batch_size: 8
+
+scheduler:
+  _target_: src.myribs.schedulers.SchedulerExternal

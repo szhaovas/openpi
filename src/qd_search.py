@@ -19,7 +19,6 @@ from ribs.visualize import grid_archive_heatmap
 
 from src.dataset_utils import TempDataset
 from src.libero_spatial_eval import get_default_env_params
-from src.myribs.schedulers import SchedulerExternal
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +96,9 @@ def main(cfg: DictConfig):
         for em, tid in zip(emitters, cfg["eval"]["task_ids"]):
             em.task_id = tid
 
-        # TODO: Maybe use bandit scheduler to prioritize some task_ids
-        scheduler = SchedulerExternal(main_archive, emitters)
+        scheduler = instantiate(
+            cfg["qd"]["scheduler"], archive=main_archive, emitters=emitters
+        )
 
         with open(summary_filename, "w") as summary_file:
             writer = csv.writer(summary_file)
@@ -145,13 +145,13 @@ def main(cfg: DictConfig):
             all_measures,
             all_task_id,
         ) = ([], [], [], [])
-        for eid, (em, eval) in enumerate(zip(scheduler.emitters, evaluators)):
+        for eid, em in enumerate(scheduler.emitters):
             # Each emitter emits batch_size solutions
             sol_start = eid * cfg["qd"]["emitter"]["batch_size"]
             sol_end = sol_start + cfg["qd"]["emitter"]["batch_size"]
-            repaired, objective, measures, trajectories = eval.evaluate(
-                solutions=solutions[sol_start:sol_end]
-            )
+            repaired, objective, measures, trajectories = evaluators[
+                em.task_id
+            ].evaluate(solutions=solutions[sol_start:sol_end])
 
             all_repaired.extend(repaired)
             all_objective.extend(objective)

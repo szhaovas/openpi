@@ -69,6 +69,9 @@ class TempDataset:
         state = state_action["state"]
         action = state_action["action"]
 
+        with open(eps_dir / "success.txt", "r", encoding="utf-8") as f:
+            success = bool(f.read().rstrip("\n"))
+
         with open(eps_dir / "instruction.txt", "r", encoding="utf-8") as f:
             prompt = f.read().rstrip("\n")
 
@@ -86,7 +89,7 @@ class TempDataset:
 
         return Trajectory(
             prompt=prompt,
-            success=True,
+            success=success,
             image=image,
             wrist_image=wrist_image,
             state=state,
@@ -114,8 +117,11 @@ class TempDataset:
             action=trajectory.action,
         )
 
+        with open(eps_dir / "success.txt", "w", encoding="utf-8") as f:
+            f.write(f"{int(trajectory.success)}")
+
         with open(eps_dir / "instruction.txt", "w", encoding="utf-8") as f:
-            f.write(trajectory.prompt + "\n")
+            f.write(trajectory.prompt)
 
         with imageio.get_writer(
             eps_dir / "image.mp4", fps=fps, codec="libx264"
