@@ -1,13 +1,15 @@
 defaults:
   - _self_
-  - qd: domain_randomization
+  - qd: cma_mae
   - eval: libero_spatial
 
 hydra:
   run:
     dir: ./outputs/${hydra:runtime.choices.qd}/${hydra:runtime.choices.eval}/${now:%Y-%m-%d_%H%M%S}
 
-qd_search_itr: 10
+qd_search_itr: 500
 reload_qd_scheduler_from: null
 qd_search_log_every: 10
+write_to_dataset: null
+lerobot_dataset_repo_id: ${hydra:runtime.choices.qd}/${hydra:runtime.choices.eval}/${now:%Y-%m-%d_%H%M%S}
 seed: 42

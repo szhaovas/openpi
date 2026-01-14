@@ -15,11 +15,8 @@ tmux new-session -d -s "$SESSION"
 
 # Spawns a pane for running QD loop
 tmux send-keys -t $SESSION "
-cd \"$(pwd)\"
-source examples/libero/.venv/bin/activate
-export PYTHONPATH=\$PYTHONPATH:\$PWD/third_party/libero
 export NUM_SERVERS=$NUM_SERVERS
-python -m experiments.qd_search
+uv run -m src.qd_search
 " C-m
 
 # Spawns NUM_SERVERS panes each calling serve_policy.py with its own GPU
@@ -32,7 +29,7 @@ do
     tmux split-window -v
   fi
   tmux send-keys -t "$SESSION:0.$((server_id+1))" "
-    cd \"$(pwd)\"
+    cd openpi
     CUDA_VISIBLE_DEVICES=$server_id uv run scripts/serve_policy.py --env LIBERO --port $((8000+server_id))
   " C-m
 done

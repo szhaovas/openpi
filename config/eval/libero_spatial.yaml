@@ -1,8 +1,8 @@
 
-task_ids: [0,1,2,3,4,5,6,7,8,9]
+task_ids: [2,7]
 
 task_eval:
-  _target_: experiments.libero_spatial_eval.LiberoSpatialEval
+  _target_: src.libero_spatial_eval.LiberoSpatialEval
   num_trials_per_sol: ${oc.env_int:NUM_SERVERS}
   max_steps: 220
   num_steps_wait: 10

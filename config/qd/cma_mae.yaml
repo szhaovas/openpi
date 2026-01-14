@@ -7,8 +7,8 @@ archive:
   seed: ${seed}
 
 emitter:
-  # _target_: experiments.myribs.emitters.EvolutionStrategyEmitterExternal
+  # _target_: src.myribs.emitters.EvolutionStrategyEmitterExternal
   _target_: ribs.emitters.EvolutionStrategyEmitter
   sigma0: 0.02
-  batch_size: 2
+  batch_size: 8
   seed: ${seed}
