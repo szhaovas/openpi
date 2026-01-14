@@ -1,0 +1,25 @@
+_target_: src.env_generation.latent.Latent_Evaluator
+
+name: "latent_2d"
+
+config:
+  # encoding measures
+  lstm_vae_fn: "./src/encoder/saved_models/lstm_vae.pt"
+  max_len: ${task.config.max_len} # for padding
+
+  # openpi
+  host: ${host}
+  port: ${port}
+
+  # evaluation
+  num_workers: ${num_workers}
+  ntrials: ${ntrials}
+  seed: ${seed}
+
+  # for whatever task you are generating
+  num_steps_wait: ${task.config.num_steps_wait}
+  replan_steps: ${task.config.replan_steps}
+
+  # qd specifics
+  archive_dims: [100, 100]
+  archive_ranges: [[-3.5, 3.5], [-3.5, 3.5]]

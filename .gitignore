@@ -1,0 +1,5 @@
+*_logs/
+*.pkl
+__pycache__/
+legacy_*/
+*results/

@@ -1,0 +1,18 @@
+_target_: src.qd.cma_me.CMA_ME
+
+name: "cma_me"
+
+config:
+  # archive
+  solution_dim: ${task.config.solution_dim}
+  # dependent on env search used
+  archive_dims: ${env_search.config.archive_dims}
+  archive_ranges: ${env_search.config.archive_ranges}
+  seed: ${seed}
+
+  # evolution strategy emitters
+  num_emitters: ${num_emitters}
+  x0: ${x0}
+  sigma0: ${sigma0}
+  batch_size: ${batch_size}
+  

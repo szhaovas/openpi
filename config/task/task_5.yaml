@@ -1,0 +1,18 @@
+_target_: src.task.task_5.Task_5
+
+name: "task_5"
+
+config:
+  # libero
+  bddl_fn: "pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate.bddl"
+  camera_heights: 256
+  camera_widths: 256
+  
+  # task specific
+  max_len: 220
+  num_steps_wait: 10
+  replan_steps: 5
+
+  # QD
+  solution_dim: 10
+  original_params: [-0.18, 0.32, 0.13, -0.07, 0.07, 0.03, -0.20, 0.20, 0.06, 0.20] # TODO: YAMLs should only include hparameters and not these values (refactor to somewhere else)

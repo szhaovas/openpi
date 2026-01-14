@@ -1,0 +1,29 @@
+hydra:
+  run:
+    dir: results/${now:%Y-%m-%d_%H-%M-%S}_${hydra.job.name}_${env_search.name}_${qd.name}_${task.name}
+
+# QD run
+seed: 42 # (only place seed is set)
+num_workers: ${batch_size}
+ntrials: 5 
+batch_size: 7
+num_emitters: 1
+x0: ${task.config.original_params} # TODO: put this somewhere else
+sigma0: 0.1
+num_iters: 100
+
+# openpi
+host: "0.0.0.0"
+port: 8000
+
+# logging
+log_freq: 1
+save_freq: 1 # must be fixed to 1 for now (trajectories must be collected everytime to traceback and make sure no solutions are left unturned)
+summary_csv: summary.csv
+trajectory_save_dir: trajectories
+
+defaults:
+  - _self_
+  - env_search: null
+  - qd: null
+  - task: null
