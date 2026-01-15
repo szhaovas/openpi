@@ -13,3 +13,5 @@ qd_search_log_every: 5
 write_to_dataset: null
 lerobot_dataset_repo_id: ${hydra:runtime.choices.qd}/${hydra:runtime.choices.eval}/${now:%Y-%m-%d_%H%M%S}
 seed: 42
+
+single_process: ${oc.env_isone:NUM_SERVERS}

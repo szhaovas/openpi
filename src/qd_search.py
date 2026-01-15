@@ -61,6 +61,9 @@ def main(cfg: DictConfig):
     OmegaConf.register_new_resolver(
         "oc.env_int", lambda name: int(os.environ[name])
     )
+    OmegaConf.register_new_resolver(
+        "oc.env_isone", lambda name: int(os.environ[name]) == 1
+    )
     OmegaConf.register_new_resolver("oc.len", lambda x: len(x))
     OmegaConf.register_new_resolver(
         "oc.mul", lambda *args: reduce(mul, args, 1)
@@ -123,12 +126,15 @@ def main(cfg: DictConfig):
     )
     temp_dataset = TempDataset(dataset_dir=dataset_dir)
 
-    cluster = LocalCluster(
-        processes=True,
-        n_workers=cfg["eval"]["task_eval"]["num_trials_per_sol"],
-        threads_per_worker=1,
-    )
-    client = Client(cluster)
+    if cfg["single_process"]:
+        client = None
+    else:
+        cluster = LocalCluster(
+            processes=True,
+            n_workers=cfg["eval"]["task_eval"]["num_trials_per_sol"],
+            threads_per_worker=1,
+        )
+        client = Client(cluster)
     evaluators = [
         instantiate(cfg["eval"]["task_eval"], task_id=tid, dask_client=client)
         for tid in cfg["eval"]["task_ids"]
