@@ -1,1 +1,1 @@
-from ._evolution_strategy_emitter import EvolutionStrategyEmitterExternal
+from .evolution_strategy_emitter import EvolutionStrategyEmitterExternal

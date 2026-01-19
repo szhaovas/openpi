@@ -2,12 +2,7 @@ import hashlib
 import logging
 
 import numpy as np
-from ribs._utils import (
-    check_finite,
-    check_shape,
-    validate_batch,
-    validate_single,
-)
+from ribs._utils import check_finite, validate_batch, validate_single
 from ribs.archives import ArchiveBase, ArrayStore
 from ribs.archives._transforms import (
     batch_entries_with_threshold,
@@ -18,23 +13,27 @@ logger = logging.getLogger(__name__)
 
 
 class LoggingArchive(ArchiveBase):
-    """Dummy archive that does not implement QD space elitism and simply saves
-    everything that it got. Used in domain randomization experiments.
+    """Log archive that does not implement QD space elitism and simply saves
+    everything that it got. Additionally, it is initialized with a population
+    of seed_solutions, and :meth:`sample_elites` will always sample among these
+    seed_solutions. This class is useful for domain randomization experiments,
+    which always sample around some starting configurations (i.e. no stepping
+    stone) and saves all sampled solutions.
     """
 
-    hash_retry_limit = 10000
-
-    def __init__(self, solution_dim, starting_cells, measure_dim, **kwargs):
+    def __init__(self, seed_solutions, starting_cells, **kwargs):
+        _, solution_dim = seed_solutions.shape
         ArchiveBase.__init__(
             self,
             solution_dim=solution_dim,
             cells=starting_cells,
-            measure_dim=measure_dim,
+            measure_dim=1,
             learning_rate=None,
             threshold_min=-np.inf,
             qd_score_offset=0.0,
             **kwargs,
         )
+        self._seed_solutions = seed_solutions.copy()
 
     def _upsize(self, new_cells):
         """Increases the number of cells in the archive to ``new_cells``. Since
@@ -69,7 +68,6 @@ class LoggingArchive(ArchiveBase):
         guaranteed the same measures will get mapped to the same index.
         """
         measures = np.asarray(measures)
-        check_shape(measures, "measures", self.measure_dim, "measure_dim")
         check_finite(measures, "measures")
 
         hash = hashlib.sha256(measures.tobytes()).digest()
@@ -83,20 +81,20 @@ class LoggingArchive(ArchiveBase):
             index += 1
             occupied, _ = self._store.retrieve(index)
             num_hash_retry += 1
-            if num_hash_retry > self.hash_retry_limit:
-                raise ValueError(
-                    f"exceeded hash_retry_limit {self.hash_retry_limit}"
-                )
+            if num_hash_retry > self._cells:
+                raise RuntimeError(f"exceeded hash_retry_limit {self._cells}")
 
         return index
 
     def add(self, solution, objective, measures, **fields):
+        indices = self.index_of(measures)
+
         data = validate_batch(
             self,
             {
                 "solution": solution,
                 "objective": objective,
-                "measures": measures,
+                "measures": indices,  # Saves indices instead of measures
                 **fields,
             },
         )
@@ -108,7 +106,7 @@ class LoggingArchive(ArchiveBase):
             self._upsize(new_cells)
 
         self._store.add(
-            self.index_of(data["measures"]),
+            indices,
             data,
             {
                 "dtype": self._dtype,
@@ -128,12 +126,14 @@ class LoggingArchive(ArchiveBase):
         }
 
     def add_single(self, solution, objective, measures, **fields):
+        index = np.expand_dims(self.index_of_single(measures), axis=0)
+
         data = validate_single(
             self,
             {
                 "solution": solution,
                 "objective": objective,
-                "measures": measures,
+                "measures": index,  # Saves indices instead of measures
                 **fields,
             },
         )
@@ -147,7 +147,7 @@ class LoggingArchive(ArchiveBase):
             self._upsize(new_cells)
 
         self._store.add(
-            np.expand_dims(self.index_of_single(measures), axis=0),
+            index,
             data,
             {
                 "dtype": self._dtype,
@@ -166,12 +166,18 @@ class LoggingArchive(ArchiveBase):
             "value": np.zeros(1, dtype=np.float64),
         }
 
+    def sample_elites(self, n):
+        """Always samples among :attr:`_seed_solutions`."""
+        random_indices = self._rng.integers(len(self._seed_solutions), size=n)
+        _, elites = self._store.retrieve(random_indices)
+        return elites
+
     def retrieve(self, measures):
         raise NotImplementedError(
-            "Retrieve not supported since index cannot be recovered; use sample_elites to get solutions from the archive"
+            "Retrieve not supported since index cannot be recovered."
         )
 
     def retrieve_single(self, measures):
         raise NotImplementedError(
-            "Retrieve not supported since index cannot be recovered; use sample_elites to get solutions from the archive"
+            "Retrieve not supported since index cannot be recovered."
         )

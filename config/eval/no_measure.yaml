@@ -1,0 +1,6 @@
+defaults:
+  - spread_similarity
+  - _self_
+
+task_eval:
+  measure_func: null

@@ -1,0 +1,7 @@
+defaults:
+  - no_measure
+  - _self_
+
+task_eval:
+  num_trials_per_sol: 1
+  max_steps: ${oc.add:1, ${num_steps_wait}} # Takes VLA's initial embedding only

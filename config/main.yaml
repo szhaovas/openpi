@@ -1,7 +1,6 @@
 defaults:
+  - envgen: cma_mae
   - _self_
-  - qd: cma_mae
-  - eval: libero_spatial
 
 hydra:
   run:
@@ -10,7 +9,8 @@ hydra:
 qd_search_itr: 100
 reload_qd_scheduler_from: null
 qd_search_log_every: 5
-write_to_dataset: null
+write_to_succ_dataset: null
+write_to_fail_dataset: null
 lerobot_dataset_repo_id: ${hydra:runtime.choices.qd}/${hydra:runtime.choices.eval}/${now:%Y-%m-%d_%H%M%S}
 seed: 42
 

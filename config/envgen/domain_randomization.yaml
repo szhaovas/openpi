@@ -1,0 +1,15 @@
+defaults:
+  - eval: no_measure
+  - _self_
+
+archive:
+  _target_: src.myribs.archives.LoggingArchive
+  starting_cells: ${oc.mul:2, ${qd_search_itr}, ${envgen.emitter.batch_size}, ${oc.len:eval.task_ids}, ${eval.task_eval.num_trials_per_sol}} # 2 * evaluation budget of QD to make sure hashing succeeds
+
+emitter:
+  _target_: ribs.emitters.GaussianEmitter
+  sigma: 0.4
+  batch_size: ${oc.env_int:NUM_SERVERS}
+
+scheduler:
+  _target_: src.myribs.schedulers.SchedulerExternal

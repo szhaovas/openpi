@@ -2,7 +2,6 @@ import collections
 import datetime
 import logging
 import math
-from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -11,8 +10,11 @@ import imageio
 import numpy as np
 from dask.distributed import Client
 from libero.libero.envs import OffScreenRenderEnv
+from numpy.typing import NDArray
 
 from libero.libero import benchmark
+from src.dataset_utils import Trajectory
+from src.encoder import EncoderManager
 from src.vla_client.websocket_client_policy import WebsocketClientPolicy
 
 logger = logging.getLogger(__name__)
@@ -93,23 +95,11 @@ def _quat2axisangle(quat):
     return (quat[:3] * 2.0 * math.acos(quat[3])) / den
 
 
-@dataclass
-class Trajectory:
-    prompt: Optional[str] = (
-        None  # TODO: Find some way to merge this with env params
-    )
-    success: bool = False
-    image: List[np.ndarray] = field(default_factory=list)
-    wrist_image: List[np.ndarray] = field(default_factory=list)
-    state: List[np.ndarray] = field(default_factory=list)
-    action: List[np.ndarray] = field(default_factory=list)
-    # TODO: store policy embeddings(?)
-
-
 class LiberoSpatialEval:
     def __init__(
         self,
         task_id: int,
+        measure_func: Optional[str] = None,
         num_trials_per_sol: int = 1,
         max_steps: int = 220,
         num_steps_wait: int = 10,
@@ -117,10 +107,23 @@ class LiberoSpatialEval:
         seed: int = 42,
         dask_client: Optional[Client] = None,
         repair_config: Optional[Dict] = None,
-        *args,
         **kwargs,
     ):
         self.task_id = task_id
+
+        if measure_func not in [None, "spread_similarity", "policy_embedding"]:
+            raise ValueError(
+                f"Unknown measure_func {measure_func} (must be one of {[None, 'spread_similarity', 'policy_embedding']})"
+            )
+        if measure_func == "policy_embedding":
+            if "measure_encoder" not in kwargs:
+                raise ValueError(
+                    "If measure_func='policy_embedding', measure_encoder must also be set"
+                )
+            else:
+                self._measure_enc: EncoderManager = kwargs["measure_encoder"]
+        self.measure_func = measure_func
+
         self.num_trials_per_sol = num_trials_per_sol
         self.max_steps = max_steps
         self.num_steps_wait = num_steps_wait
@@ -138,7 +141,6 @@ class LiberoSpatialEval:
         self.repair_config = repair_config
         self._eval_stub = partial(
             OffScreenRenderEnv,
-            *args,
             bddl_file_name=custom_task_suite.tasks[self.task_id].bddl_file,
             repair_config=self.repair_config,
             **kwargs,
@@ -146,7 +148,7 @@ class LiberoSpatialEval:
 
     def evaluate_single(
         self, solution: np.ndarray
-    ) -> Tuple[np.ndarray, float, Tuple[float, float], List[Trajectory]]:
+    ) -> Tuple[np.ndarray, float, NDArray[np.floating], List[Trajectory]]:
         """Evaluates a single solution by creating a LIBERO env from it and
         doing VLA rollout for :attr:`num_trials_per_sol` times. If
         :attr:`dask_client` is set, the rollouts will be parallelized. If
@@ -163,10 +165,10 @@ class LiberoSpatialEval:
                 repair was done, returns a copy of the original solution.
             objective (float): Entropy of VLA's success rate on the
                 environment created from ``solution`` across all trials.
-            measures (Tuple[float, float]): The spread and similarity
-                corresponding to the generated environment. The former
-                represents how well do objects cover the table. The latter
-                represents how tightly are objects clustered.
+            measures (np.ndarray): Measure values corresponding to this
+                solution and the measure function defined in
+                :attr:`measure_func`. Returns a random number if
+                :attr:`measure_func` is not set.
             trajectories (List[Trajectory]): Array of shape (ntrials,)
                 containing all rollout trajectories.
         """
@@ -180,7 +182,7 @@ class LiberoSpatialEval:
             return (
                 solution.copy(),
                 1e-6,
-                (0.0, 0.0),
+                np.random.rand(1),
                 [
                     Trajectory(success=False)
                     for _ in range(self.num_trials_per_sol)
@@ -227,12 +229,23 @@ class LiberoSpatialEval:
                 trajectories.append(traj)
 
         # Maximizes entropy as objective, i.e. we want more uncertain success rates
-        success_rate = np.clip(success_rate, 1e-4, 1 - 1e-4)
+        success_rate = np.clip(success_rate, 1e-6, 1 - 1e-6)
         entropy = -success_rate * math.log2(success_rate) - (
             1 - success_rate
         ) * math.log2(1 - success_rate)
 
-        return repaired_solution, entropy, (spread, similarity), trajectories
+        if self.measure_func is None:
+            measures = np.random.rand(1)
+        elif self.measure_func == "spread_similarity":
+            measures = np.array([spread, similarity])
+        elif self.measure_func == "policy_embedding":
+            measures = self._measure_enc.encode(trajectories)
+            # Average embeddings across all rollouts on this solution
+            measures = np.mean(measures, axis=0)
+        else:
+            raise RuntimeError
+
+        return repaired_solution, entropy, measures, trajectories
 
     def evaluate(
         self, solutions: np.ndarray
@@ -280,6 +293,53 @@ class LiberoSpatialEval:
             trajectories,
         )
 
+    # TODO: clean this up
+    def get_single_trajectories(
+        self, solutions: np.ndarray
+    ) -> List[Trajectory]:
+        assert self._dask_client is not None
+        assert self.num_trials_per_sol == 1
+
+        batch_size = solutions.shape[0]
+        nworkers = len(self._dask_client.scheduler_info()["workers"])
+        assert nworkers >= batch_size, (
+            f"batch_size={batch_size} exceeds the number of workers "
+            f"{nworkers}"
+        )
+
+        if self._dask_client is not None:
+            futures = [
+                self._dask_client.submit(
+                    rollout,
+                    env_params=sol,
+                    vla_client_port=8000 + sol_id,
+                    eval_stub=self._eval_stub,
+                    max_steps=self.max_steps,
+                    num_steps_wait=self.num_steps_wait,
+                    replan_steps=self.replan_steps,
+                    seed=self._seed,
+                    pure=False,
+                )
+                for sol_id, sol in enumerate(solutions)
+            ]
+            results = self._dask_client.gather(futures)
+            trajectories = [traj for _, traj in results]
+        else:
+            trajectories = []
+            for _, sol in enumerate(solutions):
+                _, traj = rollout(
+                    env_params=sol,
+                    vla_client_port=8000,
+                    eval_stub=self._eval_stub,
+                    max_steps=self.max_steps,
+                    num_steps_wait=self.num_steps_wait,
+                    replan_steps=self.replan_steps,
+                    seed=self._seed,
+                )
+                trajectories.append(traj)
+
+        return trajectories
+
 
 def rollout(
     env_params: np.ndarray,
@@ -320,7 +380,8 @@ def rollout(
                 "image": List,
                 "wrist_image": List,
                 "state": List,
-                "action": List
+                "action": List,
+                "embedding": List
             }
     """
     np.random.seed(seed)
@@ -370,7 +431,12 @@ def rollout(
                 "prompt": env.language_instruction,
             }
 
-            action_chunk = vla_client.infer(element)["actions"]
+            inference_obj = vla_client.infer(element)
+            trajectory.embedding.append(
+                np.mean(inference_obj["pre_logits"], axis=0)
+            )
+
+            action_chunk = inference_obj["actions"]
             if len(action_chunk) < replan_steps:
                 logger.warning(
                     f"We want to replan every {replan_steps} steps, but policy only predicts {len(action_chunk)} steps."

@@ -1,2 +1,2 @@
-from ._bandit_scheduler import BanditSchedulerExternal
-from ._scheduler import SchedulerExternal
+from .bandit_scheduler import BanditSchedulerExternal
+from .scheduler import SchedulerExternal

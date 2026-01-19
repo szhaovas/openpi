@@ -1,0 +1,22 @@
+defaults:
+  - spread_similarity
+  - _self_
+
+task_eval:
+  measure_func: policy_embedding
+  measure_encoder:
+    _target_: src.encoder.EncoderManager
+    ckpt_path: null
+    model_cfg:
+      _target_: src.encoder.EncoderModelConfig
+      model_type: VAE
+      input_dim: 2048 # Pi0fast embedding size (after aggregating)
+      hidden_dim: 128
+      latent_dim: 2 # How many measures
+    training_cfg:
+      _target_: src.encoder.EncoderTrainingConfig
+      training_dataset_path: null
+      batch_size: 32
+      num_steps: 1000
+      learning_rate: 0.01
+      save_to: ${hydra:runtime.output_dir}/encoder_ckpt.pt

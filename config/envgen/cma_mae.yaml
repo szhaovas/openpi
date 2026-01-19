@@ -1,5 +1,9 @@
+defaults:
+  - eval: policy_embedding
+  - _self_
+
 archive:
-  _target_: ribs.archives.GridArchive
+  _target_: src.myribs.archives.GridArchiveWrapper
   dims: [100, 100]
   ranges: [[0,1], [0,1]]
   learning_rate: 0.1
@@ -16,5 +20,6 @@ emitter:
 scheduler:
   # _target_: src.myribs.schedulers.SchedulerExternal
   _target_: src.myribs.schedulers.BanditSchedulerExternal
-  num_active: 2
+  num_active: 1
   zeta: 0.5
+  reselect: all
