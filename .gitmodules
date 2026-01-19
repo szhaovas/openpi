@@ -1,7 +1,7 @@
 [submodule "libero"]
 	path = libero
-	url = git@github.com:szhaovas/LIBERO.git
+	url = https://github.com/szhaovas/LIBERO.git
 	branch = parallelized
 [submodule "openpi"]
 	path = openpi
-	url = git@github.com:Physical-Intelligence/openpi.git
+	url = https://github.com/Physical-Intelligence/openpi.git
