@@ -11,6 +11,7 @@ from typing import Optional
 import hydra
 import matplotlib.pyplot as plt
 import numpy as np
+import tqdm
 from dask.distributed import Client, LocalCluster
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
@@ -84,6 +85,69 @@ def seed_everything(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
+def collect_embeddings(colemb_cfg: DictConfig):
+    embedding_dataset = TempDataset(dataset_dir=colemb_cfg.save_embeddings_to)
+
+    archive = instantiate(
+        colemb_cfg.envgen.archive, solution_dim=len(get_default_env_params())
+    )
+
+    emitters = [
+        instantiate(
+            colemb_cfg.envgen.emitter,
+            archive=archive,
+            x0=get_default_env_params(tid),
+        )
+        for tid in colemb_cfg.eval.task_ids
+    ]
+    for em, tid in zip(emitters, colemb_cfg.eval.task_ids):
+        em.task_id = tid
+
+    scheduler = instantiate(
+        colemb_cfg.envgen.scheduler, archive=archive, emitters=emitters
+    )
+
+    if colemb_cfg.single_process:
+        client = None
+    else:
+        cluster = LocalCluster(
+            processes=True,
+            n_workers=colemb_cfg.envgen.emitter.batch_size,
+            threads_per_worker=1,
+        )
+        client = Client(cluster)
+
+    evaluators = [
+        instantiate(colemb_cfg.eval.task_eval, task_id=tid, dask_client=client)
+        for tid in range(10)
+    ]
+
+    for _ in tqdm.trange(
+        0,
+        colemb_cfg.collect_embedding_num_evals,
+        len(scheduler.emitters) * colemb_cfg.envgen.emitter.batch_size,
+    ):
+        solutions = scheduler.ask()
+
+        for eid, em in enumerate(scheduler.emitters):
+            sol_start = eid * colemb_cfg.envgen.emitter.batch_size
+            sol_end = sol_start + colemb_cfg.envgen.emitter.batch_size
+            trajectories = evaluators[em.task_id].get_single_trajectories(
+                solutions=solutions[sol_start:sol_end]
+            )
+
+            for traj in trajectories:
+                embedding_dataset.write_episode(trajectory=traj)
+
+        # Dummy objective and measure values
+        scheduler.tell(
+            np.repeat(1e-6, solutions.shape[0]),
+            np.random.rand(solutions.shape[0], 1),
+            solution=solutions,
+            injected=np.full(solutions.shape[0], False),
+        )
+
+
 @hydra.main(version_base=None, config_path="../config", config_name="main")
 def main(cfg: DictConfig):
     add_omegaconf_resolvers()
@@ -92,14 +156,10 @@ def main(cfg: DictConfig):
     logdir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
     summary_filename = logdir / "summary.csv"
 
-    default_params = np.array(
-        [get_default_env_params(tid) for tid in cfg.eval.task_ids]
-    )
-
-    if cfg.reload_qd_scheduler_from is None:
+    if cfg.reload_scheduler_from is None:
         archive = instantiate(
             cfg.envgen.archive,
-            seed_solutions=default_params,
+            solution_dim=len(get_default_env_params()),
             extra_fields={
                 "task_id": (
                     (),
@@ -114,7 +174,7 @@ def main(cfg: DictConfig):
             instantiate(
                 cfg.envgen.emitter,
                 archive=archive,
-                x0=default_params[tid],
+                x0=get_default_env_params(tid),
             )
             for tid in cfg.eval.task_ids
         ]
@@ -131,15 +191,15 @@ def main(cfg: DictConfig):
                 ["Iteration", "QD-Score", "Coverage", "Maximum", "Average"]
             )
     else:
-        reload_itr = _extract_scheduler_itr(cfg.reload_qd_scheduler_from)
+        reload_itr = _extract_scheduler_itr(cfg.reload_scheduler_from)
         if reload_itr is None:
             logger.error(
-                "Received invalid reload_qd_scheduler_from parameter "
-                f"{cfg.reload_qd_scheduler_from}; "
+                "Received invalid reload_scheduler_from parameter "
+                f"{cfg.reload_scheduler_from}; "
                 "expected */scheduler_[0-9]{8}.pkl"
             )
             raise ValueError
-        with open(file=cfg.reload_qd_scheduler_from, mode="rb") as f:
+        with open(file=cfg.reload_scheduler_from, mode="rb") as f:
             scheduler = pkl.load(f)
 
     succ_dataset_dir = (
@@ -164,16 +224,51 @@ def main(cfg: DictConfig):
             threads_per_worker=1,
         )
         client = Client(cluster)
+
+    eval_mode = hydra.core.hydra_config.HydraConfig.get().runtime.choices[
+        "eval"
+    ]
+    if eval_mode == "policy_embedding":
+        collect_embedding_config = hydra.compose(
+            config_name="main",
+            overrides=["envgen=domain_randomization", "eval=first_timestep"],
+        )
+        collect_embeddings(collect_embedding_config)
+        encoder_manager = instantiate(cfg.eval.measure_encoder)
+    else:
+        encoder_manager = None
+
     # Each task gets an evaluator. There are 10 libero-spatial tasks
     # TODO: Define an evaluator retrieval
     evaluators = [
-        instantiate(cfg.eval.task_eval, task_id=tid, dask_client=client)
+        instantiate(
+            cfg.eval.task_eval,
+            task_id=tid,
+            dask_client=client,
+            measure_encoder=encoder_manager,
+        )
         for tid in range(10)
     ]
 
-    start = 1 if cfg.reload_qd_scheduler_from is None else reload_itr + 1
-    end = start + cfg.qd_search_itr
-    for i in range(start, end):
+    search_itr = cfg.env_search_num_evals / (
+        len(cfg.eval.task_ids)
+        * cfg.envgen.emitter.batch_size
+        * cfg.eval.task_eval.num_trials_per_sol
+    )
+    assert search_itr > 1
+
+    logger.info(
+        f"Search evaluation budget {cfg.env_search_num_evals} needs to be split among "
+        f"{len(cfg.eval.task_ids)} emitters.\n Each emitter samples batch_size "
+        f"{cfg.envgen.emitter.batch_size} solutions,\n and each solution will "
+        f"be evaluated {cfg.eval.task_eval.num_trials_per_sol} times.\n"
+        "====================================================================\n"
+        f"Up to {search_itr} search iterations will be run.\n"
+        "====================================================================\n"
+    )
+
+    start = 1 if cfg.reload_scheduler_from is None else reload_itr + 1
+    for i in tqdm.trange(start, search_itr + 1):
         solutions = scheduler.ask()
 
         (
@@ -236,8 +331,8 @@ def main(cfg: DictConfig):
             f"\t Average : {scheduler.archive.stats.obj_mean}\n"
         )
 
-        final_itr = i == end
-        if i % cfg.qd_search_log_every == 0 or final_itr:
+        final_itr = i == search_itr
+        if i % cfg.log_every == 0 or final_itr:
             pkl.dump(
                 scheduler,
                 open(logdir / f"scheduler_{i:08d}.pkl", "wb"),

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-NUM_SERVERS=3 # This should be the same as cfg["eval"]["num_trials_per_sol"]
+NUM_SERVERS=1 # This should be the same as cfg.eval.task_eval.num_trials_per_sol
 SESSION=openpi-libero
 
 # Check if session exists
@@ -16,7 +16,7 @@ tmux new-session -d -s "$SESSION"
 # Spawns a pane for running QD loop
 tmux send-keys -t $SESSION "
 export NUM_SERVERS=$NUM_SERVERS
-uv run -m src.qd_search
+uv run -m src.env_search
 " C-m
 
 # Spawns NUM_SERVERS panes each calling serve_policy.py with its own GPU

@@ -1,11 +1,11 @@
 defaults:
-  - eval: policy_embedding
+  - /eval@eval: policy_embedding
   - _self_
 
 archive:
   _target_: src.myribs.archives.GridArchiveWrapper
   dims: [100, 100]
-  ranges: [[0,1], [0,1]]
+  ranges: [[-3,3], [-3,3]] # change this to [[0,1], [0,1]] for spread_similarity measures
   learning_rate: 0.1
   threshold_min: 0
   seed: ${seed}

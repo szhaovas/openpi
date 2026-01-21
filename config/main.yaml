@@ -4,14 +4,18 @@ defaults:
 
 hydra:
   run:
-    dir: ./outputs/${hydra:runtime.choices.qd}/${hydra:runtime.choices.eval}/${now:%Y-%m-%d_%H%M%S}
+    dir: ./outputs/${hydra:runtime.choices.envgen}/${now:%Y-%m-%d_%H%M%S}
 
-qd_search_itr: 100
-reload_qd_scheduler_from: null
-qd_search_log_every: 5
+collect_embedding_num_evals: 100
+save_embeddings_to: ${hydra:runtime.output_dir}/embeddings
+
+# search_itr * num_emitters * emitter_batch_size * trials_per_sol
+env_search_num_evals: ${oc.mul:100, ${oc.len:eval.task_ids}, ${envgen.emitter.batch_size}, ${eval.task_eval.num_trials_per_sol}}
+reload_scheduler_from: null
 write_to_succ_dataset: null
 write_to_fail_dataset: null
-lerobot_dataset_repo_id: ${hydra:runtime.choices.qd}/${hydra:runtime.choices.eval}/${now:%Y-%m-%d_%H%M%S}
+lerobot_dataset_repo_id: ${hydra:runtime.choices.envgen}/${now:%Y-%m-%d_%H%M%S}
+log_every: 5
 seed: 42
 
-single_process: ${oc.env_isone:NUM_SERVERS}
+single_process: ${oc.env_isone:NUM_SERVERS} # If True, there will be no dask parallelization and all evals will be done sequentially

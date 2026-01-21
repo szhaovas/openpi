@@ -107,6 +107,7 @@ class LiberoSpatialEval:
         seed: int = 42,
         dask_client: Optional[Client] = None,
         repair_config: Optional[Dict] = None,
+        measure_encoder: Optional[EncoderManager] = None,
         **kwargs,
     ):
         self.task_id = task_id
@@ -116,12 +117,11 @@ class LiberoSpatialEval:
                 f"Unknown measure_func {measure_func} (must be one of {[None, 'spread_similarity', 'policy_embedding']})"
             )
         if measure_func == "policy_embedding":
-            if "measure_encoder" not in kwargs:
+            if measure_encoder is None:
                 raise ValueError(
                     "If measure_func='policy_embedding', measure_encoder must also be set"
                 )
-            else:
-                self._measure_enc: EncoderManager = kwargs["measure_encoder"]
+            self._measure_enc = measure_encoder
         self.measure_func = measure_func
 
         self.num_trials_per_sol = num_trials_per_sol
@@ -297,17 +297,16 @@ class LiberoSpatialEval:
     def get_single_trajectories(
         self, solutions: np.ndarray
     ) -> List[Trajectory]:
-        assert self._dask_client is not None
         assert self.num_trials_per_sol == 1
 
-        batch_size = solutions.shape[0]
-        nworkers = len(self._dask_client.scheduler_info()["workers"])
-        assert nworkers >= batch_size, (
-            f"batch_size={batch_size} exceeds the number of workers "
-            f"{nworkers}"
-        )
-
         if self._dask_client is not None:
+            batch_size = solutions.shape[0]
+            nworkers = len(self._dask_client.scheduler_info()["workers"])
+            assert nworkers >= batch_size, (
+                f"batch_size={batch_size} exceeds the number of workers "
+                f"{nworkers}"
+            )
+            
             futures = [
                 self._dask_client.submit(
                     rollout,

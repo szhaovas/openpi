@@ -23,9 +23,9 @@ python CPLEX_Studio201/python/setup.py install
 
 ## Run QD search
 ```bash
-./run_qd_search.sh
+./run_env_search.sh
 ```
-Change the `NUM_SERVERS` field in `run_qd_search.sh` to the number of GPUs you wish to use to host VLA servers. By default, this is also the number of times each generated environment will be evaluated.
+Change the `NUM_SERVERS` field in `run_env_search.sh` to the number of GPUs you wish to use to host VLA servers. By default, this is also the number of times each generated environment will be evaluated.
 If you only have access to a single GPU, set `NUM_SERVERS=1` and modify `./config/eval/libero_spatial.yaml:task_eval:num_trials_per_sol` to the number of evaluations per environment.
 
 ## Finetune

@@ -33,7 +33,7 @@ class EncoderModelConfig:
 class EncoderTrainingConfig:
     training_dataset_path: str
     batch_size: int
-    num_steps: int
+    num_train_epochs: int
     learning_rate: float
     save_to: Optional[str]
 
@@ -87,10 +87,9 @@ class EncoderManager:
 
     def _init_encoder_from_checkpoint(self, path: Path) -> None:
         checkpoint = torch.load(path, map_location="cpu")
-        model_cfg = EncoderModelConfig(**checkpoint["model_cfg"])
-        self._init_encoder(model_cfg)
+        self.model_cfg = checkpoint["model_cfg"]
+        self._init_encoder(self.model_cfg)
         self.model.load_state_dict(checkpoint["state_dict"])
-        self.model_cfg = model_cfg
 
     def _train_encoder(self, train_cfg: EncoderTrainingConfig) -> None:
         dataset = TempDataset(dataset_dir=Path(train_cfg.training_dataset_path))
@@ -102,11 +101,12 @@ class EncoderManager:
         else:
             raise RuntimeError
 
-        train_loader = DataLoader(
+        data_loader = DataLoader(
             dataset,
             batch_size=train_cfg.batch_size,
             shuffle=True,
             collate_fn=collate_fn,
+            num_workers=2
         )
 
         optimizer = torch.optim.Adam(
@@ -115,10 +115,10 @@ class EncoderManager:
 
         self.model.train()
 
-        for i in tqdm.trange(0, train_cfg.num_steps):
+        for i in tqdm.trange(0, train_cfg.num_train_epochs):
             total_loss = 0.0
 
-            for x in train_loader:
+            for x in data_loader:
                 x = x.to(self.device)
 
                 if isinstance(self.model, VAE):
@@ -140,7 +140,7 @@ class EncoderManager:
 
                 total_loss += loss.item()
 
-            avg_loss = total_loss / len(train_loader)
+            avg_loss = total_loss / len(data_loader)
             tqdm.tqdm.write(f"Training step {i:05d} | loss={avg_loss:.4f}")
 
         if train_cfg.save_to is not None:
@@ -159,10 +159,10 @@ class EncoderManager:
     @torch.no_grad()
     def encode(self, trajectories: List[Trajectory]) -> NDArray:
         if isinstance(self.model, VAE):
-            x = embedding_collate(trajectories)
+            x = embedding_collate(trajectories).to(self.device)
             z, _, _ = self.model(x)
         elif isinstance(self.model, LSTMVAE):
-            x = padded_embedding_collate(trajectories)
+            x = padded_embedding_collate(trajectories).to(self.device)
             z, _, _ = self.model(
                 x["padded_embeddings"], seq_len=x["pre_pad_lengths"]
             )
