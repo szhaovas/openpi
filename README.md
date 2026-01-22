@@ -1,4 +1,5 @@
 ## Installation
+Please make sure you are not in a virtual environment before running this.
 ```bash
 git clone --recurse-submodules https://github.com/szhaovas/openpi.git
 cd openpi

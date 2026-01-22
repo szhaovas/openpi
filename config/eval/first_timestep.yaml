@@ -1,7 +1,8 @@
 defaults:
-  - no_measure
+  - spread_similarity
   - _self_
 
 task_eval:
+  measure_func: null
   num_trials_per_sol: 1
   max_steps: 1 # Takes VLA's initial embedding only

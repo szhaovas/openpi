@@ -8,7 +8,7 @@ task_eval:
 # Make measure_encoder its own config since we only need 1 measure_encoder for all evaluators
 measure_encoder:
   _target_: src.encoder.EncoderManager
-  ckpt_path: null # If a trained checkpoint is available, set it here to skip embedding collection and training
+  ckpt_path: null
   model_cfg:
     _target_: src.encoder.EncoderModelConfig
     model_type: vae
@@ -19,6 +19,6 @@ measure_encoder:
     _target_: src.encoder.EncoderTrainingConfig
     training_dataset_path: ${hydra:runtime.output_dir}/embeddings
     batch_size: 32
-    num_train_epochs: 20
+    num_train_epochs: 40
     learning_rate: 0.01
     save_to: ${hydra:runtime.output_dir}/encoder_ckpt.pt

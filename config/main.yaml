@@ -1,21 +1,22 @@
 defaults:
   - envgen: cma_mae
+  - eval: policy_embedding
   - _self_
 
 hydra:
   run:
     dir: ./outputs/${hydra:runtime.choices.envgen}/${now:%Y-%m-%d_%H%M%S}
 
-collect_embedding_num_evals: 100
+collect_embedding_num_evals: ${oc.mul:4, ${oc.len:${eval.task_ids}}, ${envgen.emitter.batch_size}} # 4 batches from each task
 save_embeddings_to: ${hydra:runtime.output_dir}/embeddings
 
-# search_itr * num_emitters * emitter_batch_size * trials_per_sol
-env_search_num_evals: ${oc.mul:100, ${oc.len:eval.task_ids}, ${envgen.emitter.batch_size}, ${eval.task_eval.num_trials_per_sol}}
-reload_scheduler_from: null
-write_to_succ_dataset: null
-write_to_fail_dataset: null
+# search_itr * emitter_batch_size * trials_per_sol
+env_search_num_evals: ${oc.mul:100, ${envgen.emitter.batch_size}, ${eval.task_eval.num_trials_per_sol}}
 lerobot_dataset_repo_id: ${hydra:runtime.choices.envgen}/${now:%Y-%m-%d_%H%M%S}
-log_every: 5
+log_every: ${oc.mul:5, ${envgen.emitter.batch_size}, ${eval.task_eval.num_trials_per_sol}} # Log every 5 search iterations
 seed: 42
 
 single_process: ${oc.env_isone:NUM_SERVERS} # If True, there will be no dask parallelization and all evals will be done sequentially
+
+# for resuming an experiment
+reload_from_dir: null

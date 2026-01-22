@@ -51,12 +51,16 @@ class EncoderManager:
         model_cfg: Optional[EncoderModelConfig] = None,
         train_cfg: Optional[EncoderTrainingConfig] = None,
     ):
-        """
-        One of:
-            - ckpt_path
-            - (model_cfg + train_cfg)
+        """Handles initialization and training of autoencoders. Also exposes
+        :meth:`encode`, which returns the latent embeddings from the current
+        autoencoder.
 
-        must be provided.
+        Args:
+            One of:
+                - ckpt_path
+                    - An autoencoder is directly loaded from the checkpoint
+                - (model_cfg + train_cfg)
+                    - Initializes and trains a fresh autoencoder
         """
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -106,7 +110,7 @@ class EncoderManager:
             batch_size=train_cfg.batch_size,
             shuffle=True,
             collate_fn=collate_fn,
-            num_workers=2
+            num_workers=4,
         )
 
         optimizer = torch.optim.Adam(
@@ -141,7 +145,7 @@ class EncoderManager:
                 total_loss += loss.item()
 
             avg_loss = total_loss / len(data_loader)
-            tqdm.tqdm.write(f"Training step {i:05d} | loss={avg_loss:.4f}")
+            tqdm.tqdm.write(f"Epoch {i:04d} | loss={avg_loss:.4f}")
 
         if train_cfg.save_to is not None:
             self._save_checkpoint(Path(train_cfg.save_to))
