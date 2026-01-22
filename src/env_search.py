@@ -233,6 +233,7 @@ def main(cfg: DictConfig):
             overrides=[
                 "envgen=domain_randomization",
                 "eval=first_timestep",
+                "single_process=true",
             ],
         )
         collect_embeddings(collect_embedding_config)
@@ -259,22 +260,18 @@ def main(cfg: DictConfig):
         starting_nevals = _extract_reload_nevals(cfg.reload_from_dir)
 
         with open(
-            file=f"{cfg.reload_from_dir}/scheduler_{starting_nevals:08d}.pkl",
+            file=logdir / f"scheduler_{starting_nevals:08d}.pkl",
             mode="rb",
         ) as f:
             scheduler = pkl.load(f)
 
         encoder_manager = instantiate(
             cfg.eval.measure_encoder,
-            ckpt_path=f"{cfg.reload_from_dir}/encoder_ckpt.pt",
+            ckpt_path=logdir / "encoder_ckpt.pt",
         )
 
-        temp_succ_dataset = TempDataset(
-            dataset_dir=Path(cfg.reload_from_dir) / "succ_dataset"
-        )
-        temp_fail_dataset = TempDataset(
-            dataset_dir=Path(cfg.reload_from_dir) / "fail_dataset"
-        )
+    temp_succ_dataset = TempDataset(dataset_dir=logdir / "succ_dataset")
+    temp_fail_dataset = TempDataset(dataset_dir=logdir / "fail_dataset")
 
     if cfg.single_process:
         client = None

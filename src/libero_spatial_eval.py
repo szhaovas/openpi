@@ -9,10 +9,10 @@ from typing import Dict, List, Optional, Tuple
 import imageio
 import numpy as np
 from dask.distributed import Client
+from libero.libero.envs import OffScreenRenderEnv
 from numpy.typing import NDArray
 
 from libero.libero import benchmark
-from libero.libero.envs import OffScreenRenderEnv
 from src.dataset_utils import Trajectory
 from src.encoder import EncoderManager
 from src.vla_client.websocket_client_policy import WebsocketClientPolicy
@@ -104,6 +104,7 @@ class LiberoSpatialEval:
         max_steps: int = 220,
         num_steps_wait: int = 10,
         replan_steps: int = 5,
+        server_port_start: int = 8000,
         seed: int = 42,
         dask_client: Optional[Client] = None,
         repair_config: Optional[Dict] = None,
@@ -128,6 +129,7 @@ class LiberoSpatialEval:
         self.max_steps = max_steps
         self.num_steps_wait = num_steps_wait
         self.replan_steps = replan_steps
+        self.server_port_start = server_port_start
         self._seed = seed
 
         self._dask_client = dask_client
@@ -198,7 +200,7 @@ class LiberoSpatialEval:
                 self._dask_client.submit(
                     rollout,
                     env_params=repaired_solution,
-                    vla_client_port=8000 + trial_id,
+                    vla_client_port=self.server_port_start + trial_id,
                     eval_stub=self._eval_stub,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
@@ -217,7 +219,7 @@ class LiberoSpatialEval:
             for trial_id in range(self.num_trials_per_sol):
                 succ, traj = rollout(
                     env_params=repaired_solution,
-                    vla_client_port=8000,
+                    vla_client_port=self.server_port_start,
                     eval_stub=self._eval_stub,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
@@ -300,18 +302,11 @@ class LiberoSpatialEval:
         assert self.num_trials_per_sol == 1
 
         if self._dask_client is not None:
-            batch_size = solutions.shape[0]
-            nworkers = len(self._dask_client.scheduler_info()["workers"])
-            assert nworkers >= batch_size, (
-                f"batch_size={batch_size} exceeds the number of workers "
-                f"{nworkers}"
-            )
-
             futures = [
                 self._dask_client.submit(
                     rollout,
                     env_params=sol,
-                    vla_client_port=8000 + sol_id,
+                    vla_client_port=self.server_port_start + sol_id,
                     eval_stub=self._eval_stub,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
@@ -328,7 +323,7 @@ class LiberoSpatialEval:
             for _, sol in enumerate(solutions):
                 _, traj = rollout(
                     env_params=sol,
-                    vla_client_port=8000,
+                    vla_client_port=self.server_port_start,
                     eval_stub=self._eval_stub,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,

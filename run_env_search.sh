@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-NUM_SERVERS=1 # This should be the same as cfg.eval.task_eval.num_trials_per_sol
+NUM_SERVERS=3 # This should be the same as cfg.eval.task_eval.num_trials_per_sol
+SERVER_PORT_START=8001
 SESSION=openpi-libero
 
 # Check if session exists
@@ -16,6 +17,7 @@ tmux new-session -d -s "$SESSION"
 # Spawns a pane for running QD loop
 tmux send-keys -t $SESSION "
 export NUM_SERVERS=$NUM_SERVERS
+export SERVER_PORT_START=$SERVER_PORT_START
 uv run -m src.env_search
 " C-m
 
@@ -30,7 +32,7 @@ do
   fi
   tmux send-keys -t "$SESSION:0.$((server_id+1))" "
     cd openpi
-    CUDA_VISIBLE_DEVICES=$server_id uv run scripts/serve_policy.py --env LIBERO --port $((8000+server_id))
+    CUDA_VISIBLE_DEVICES=$server_id uv run scripts/serve_policy.py --env LIBERO --port $((SERVER_PORT_START+server_id))
   " C-m
 done
 
