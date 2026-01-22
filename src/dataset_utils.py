@@ -213,9 +213,10 @@ def _suppress_tqdm():
 def embedding_collate(batch: Iterable[Trajectory]) -> torch.Tensor:
     embeddings = []
     for traj in batch:
-        embeddings.append(
-            torch.tensor(traj.embedding[0])
-        )  # Takes 1st embedding
+        if len(traj.embedding) > 0:
+            embeddings.append(
+                torch.tensor(traj.embedding[0])
+            )  # Takes 1st embedding
 
     return torch.stack(embeddings, dim=0)
 

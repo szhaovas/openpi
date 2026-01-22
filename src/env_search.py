@@ -243,7 +243,7 @@ def main(cfg: DictConfig):
             writer = csv.writer(summary_file)
             writer.writerow(
                 [
-                    "Iteration",
+                    "Num.Evals",
                     "QD-Score",
                     "Coverage",
                     "Maximum",
@@ -252,8 +252,6 @@ def main(cfg: DictConfig):
                     "Avg.EmbDist",
                 ]
             )
-            # Number of challenging environments
-            # Average embedding distance
     else:
         logdir = Path(cfg.reload_from_dir)
         summary_filename = Path(cfg.reload_from_dir) / "summary.csv"
@@ -328,7 +326,14 @@ def main(cfg: DictConfig):
                 for sol_rollouts in trajectories:
                     all_embedding.append(
                         np.mean(
-                            [traj.embedding for traj in sol_rollouts], axis=0
+                            [
+                                traj.embedding[
+                                    0
+                                ]  # first embedding before any action
+                                for traj in sol_rollouts
+                                if len(traj.embedding) > 0
+                            ],
+                            axis=0,
                         )
                     )
 

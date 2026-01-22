@@ -2,6 +2,7 @@
 
 NUM_SERVERS=3 # This should be the same as cfg.eval.task_eval.num_trials_per_sol
 SERVER_PORT_START=8001
+GPU_ID_START=3
 SESSION=openpi-libero
 
 # Check if session exists
@@ -32,7 +33,7 @@ do
   fi
   tmux send-keys -t "$SESSION:0.$((server_id+1))" "
     cd openpi
-    CUDA_VISIBLE_DEVICES=$server_id uv run scripts/serve_policy.py --env LIBERO --port $((SERVER_PORT_START+server_id))
+    CUDA_VISIBLE_DEVICES=$((GPU_ID_START+server_id)) uv run scripts/serve_policy.py --env LIBERO --port $((SERVER_PORT_START+server_id))
   " C-m
 done
 
