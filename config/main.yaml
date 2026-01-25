@@ -8,6 +8,7 @@ hydra:
     dir: ./outputs/${hydra:runtime.choices.envgen}/${now:%Y-%m-%d_%H%M%S}
 
 collect_embedding_num_evals: ${oc.mul:4, ${oc.len:${eval.task_ids}}, ${envgen.emitter.batch_size}} # 4 batches from each task
+collect_embedding_sigma: 0.04
 save_embeddings_to: ${hydra:runtime.output_dir}/embeddings
 
 # search_itr * emitter_batch_size * trials_per_sol

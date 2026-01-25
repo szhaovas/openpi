@@ -99,6 +99,7 @@ class LiberoSpatialEval:
     def __init__(
         self,
         task_id: int,
+        objective_func: Optional[str] = "entropy",
         measure_func: Optional[str] = None,
         num_trials_per_sol: int = 1,
         max_steps: int = 220,
@@ -112,6 +113,12 @@ class LiberoSpatialEval:
         **kwargs,
     ):
         self.task_id = task_id
+
+        if objective_func not in ["entropy", "success_rate"]:
+            raise ValueError(
+                f"Unknown objective_func {objective_func} (must be one of {['entropy', 'success_rate']})"
+            )
+        self.objective_func = objective_func
 
         if measure_func not in [None, "spread_similarity", "policy_embedding"]:
             raise ValueError(
@@ -165,8 +172,12 @@ class LiberoSpatialEval:
             repaired_solution (np.ndarray): Array of shape (solution_dim,)
                 containing a single solution that has been repaired. If no
                 repair was done, returns a copy of the original solution.
-            objective (float): Entropy of VLA's success rate on the
-                environment created from ``solution`` across all trials.
+            objective (float):
+                - If :attr:`objective_func` is ``success_rate``, this is VLA's
+                success rate on the environment created from ``solution``
+                across all trials.
+                - If :attr:`objective_func` is ``entropy``, this is entropy of
+                the aforementioned success rate.
             measures (np.ndarray): Measure values corresponding to this
                 solution and the measure function defined in
                 :attr:`measure_func`. Returns a random number if
@@ -230,11 +241,17 @@ class LiberoSpatialEval:
                 success_rate += succ / self.num_trials_per_sol
                 trajectories.append(traj)
 
-        # Maximizes entropy as objective, i.e. we want more uncertain success rates
-        success_rate = np.clip(success_rate, 1e-6, 1 - 1e-6)
-        entropy = -success_rate * math.log2(success_rate) - (
-            1 - success_rate
-        ) * math.log2(1 - success_rate)
+        if self.objective_func == "success_rate":
+            objective = success_rate
+        elif self.objective_func == "entropy":
+            # Maximizes entropy as objective, i.e. we want more uncertain success rates
+            success_rate = np.clip(success_rate, 1e-6, 1 - 1e-6)
+            entropy = -success_rate * math.log2(success_rate) - (
+                1 - success_rate
+            ) * math.log2(1 - success_rate)
+            objective = entropy
+        else:
+            raise RuntimeError
 
         if self.measure_func is None:
             measures = np.random.rand(1)
@@ -247,7 +264,7 @@ class LiberoSpatialEval:
         else:
             raise RuntimeError
 
-        return repaired_solution, entropy, measures, trajectories
+        return repaired_solution, objective, measures, trajectories
 
     def evaluate(
         self, solutions: np.ndarray
@@ -299,6 +316,12 @@ class LiberoSpatialEval:
     def get_single_trajectories(
         self, solutions: np.ndarray
     ) -> List[Trajectory]:
+        """Useful for collecting embeddings for autoencoder training. We define
+        this seperately from :meth:`evaluate` because each solution only gets
+        evaluated once when collecting embeddings and it no longer makes sense
+        to parallelize by rollouts. Instead, this function parallelizes by
+        solutions.
+        """
         assert self.num_trials_per_sol == 1
 
         if self._dask_client is not None:

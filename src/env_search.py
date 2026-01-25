@@ -18,6 +18,7 @@ from omegaconf import DictConfig, OmegaConf
 from ribs.archives import GridArchive
 from ribs.visualize import grid_archive_heatmap
 from scipy.spatial.distance import pdist
+from vendi_score import vendi
 
 from src.dataset_utils import TempDataset
 from src.libero_spatial_eval import get_default_env_params
@@ -95,13 +96,15 @@ def collect_embeddings(colemb_cfg: DictConfig):
     )
 
     archive = instantiate(
-        colemb_cfg.envgen.archive, solution_dim=len(get_default_env_params())
+        colemb_cfg.envgen.logging_archive,
+        solution_dim=len(get_default_env_params()),
     )
 
     emitters = [
         instantiate(
             colemb_cfg.envgen.emitter,
             archive=archive,
+            sigma=colemb_cfg.collect_embedding_sigma,
             x0=get_default_env_params(tid),
         )
         for tid in colemb_cfg.eval.task_ids
@@ -167,9 +170,10 @@ def main(cfg: DictConfig):
         summary_filename = logdir / "summary.csv"
         starting_nevals = 1
 
-        # Main archive for storing environments found by the pipelin
-        archive = instantiate(
-            cfg.envgen.archive,
+        # QD archive for QD visualization and metrics.
+        # In the case of cma-mae, also provides x0 in case of restart.
+        qd_archive = instantiate(
+            cfg.envgen.qd_archive,
             solution_dim=len(get_default_env_params()),
             extra_fields={
                 "task_id": (
@@ -183,15 +187,11 @@ def main(cfg: DictConfig):
             },
         )
 
-        # Passive archive for computing QD metrics
-        result_archive_cfg = hydra.compose(
-            config_name="main", overrides=["envgen=cma_mae"]
-        ).envgen.archive
-        result_archive = instantiate(
-            result_archive_cfg,
+        # For saving all results found throughout the search.
+        # This is needed because QD archive implements elitism and may discard past results if better alternatives are found.
+        logging_archive = instantiate(
+            cfg.envgen.logging_archive,
             solution_dim=len(get_default_env_params()),
-            learning_rate=None,
-            threshold_min=-np.inf,
             extra_fields={
                 "task_id": (
                     (),
@@ -210,7 +210,7 @@ def main(cfg: DictConfig):
         emitters = [
             instantiate(
                 cfg.envgen.emitter,
-                archive=archive,
+                archive=qd_archive,
                 x0=get_default_env_params(tid),
             )
             for tid in cfg.eval.task_ids
@@ -221,9 +221,9 @@ def main(cfg: DictConfig):
         # Scheduler for switching among tasks
         scheduler = instantiate(
             cfg.envgen.scheduler,
-            archive=archive,
+            archive=qd_archive,
             emitters=emitters,
-            result_archive=result_archive,
+            result_archive=logging_archive,
         )
 
         # Collect some embeddings to train an autoencoder for latent representations
@@ -250,6 +250,8 @@ def main(cfg: DictConfig):
                     "Average",
                     "Num.ValidEnv",
                     "Avg.EmbDist",
+                    "Vendi-Score",
+                    "QVendi-Score",
                 ]
             )
     else:
@@ -372,22 +374,28 @@ def main(cfg: DictConfig):
                 embedding=all_embedding,
             )
 
+            # These metrics need to be computed over all historical results. Use logging_archive
             archive_data = scheduler.result_archive.data(
                 ["objective", "embedding"]
             )
+            num_valid_env = np.sum(archive_data["objective"] > 0.01)
             avg_emb_dist = np.mean(
                 pdist(archive_data["embedding"], metric="euclidean")
             )
-            num_valid_env = np.sum(archive_data["objective"] > 0.01)
+            emb_vendi = vendi.score_X(archive_data["embedding"], normalize=True)
+            emb_qvendi = np.mean(archive_data["objective"]) * emb_vendi
 
+            # Use qd_archive for QD metrics
             logger.info(
                 f"---------------------- Eval {pbar.n:08d} ----------------------\n"
-                f"\t QD-Score: {scheduler.result_archive.stats.qd_score}\n"
-                f"\t Coverage: {scheduler.result_archive.stats.coverage}\n"
-                f"\t Maximum : {scheduler.result_archive.stats.obj_max}\n"
-                f"\t Average : {scheduler.result_archive.stats.obj_mean}\n"
+                f"\t QD-Score: {scheduler.archive.stats.qd_score}\n"
+                f"\t Coverage: {scheduler.archive.stats.coverage}\n"
+                f"\t Maximum : {scheduler.archive.stats.obj_max}\n"
+                f"\t Average : {scheduler.archive.stats.obj_mean}\n"
                 f"\t Num.ValidEnv : {num_valid_env}\n"
                 f"\t Avg.EmbDist : {avg_emb_dist}\n"
+                f"\t Vendi-Score : {emb_vendi}\n"
+                f"\t QVendi-Score : {emb_qvendi}\n"
             )
 
             final_itr = pbar.n == cfg.env_search_num_evals
@@ -402,20 +410,21 @@ def main(cfg: DictConfig):
                     writer = csv.writer(summary_file)
                     data = [
                         pbar.n,
-                        scheduler.result_archive.stats.qd_score,
-                        scheduler.result_archive.stats.coverage,
-                        scheduler.result_archive.stats.obj_max,
-                        scheduler.result_archive.stats.obj_mean,
+                        scheduler.archive.stats.qd_score,
+                        scheduler.archive.stats.coverage,
+                        scheduler.archive.stats.obj_max,
+                        scheduler.archive.stats.obj_mean,
                         num_valid_env,
                         avg_emb_dist,
+                        emb_vendi,
+                        emb_qvendi,
                     ]
                     writer.writerow(data)
 
-                if isinstance(scheduler.result_archive, GridArchive):
-                    save_heatmap(
-                        scheduler.result_archive,
-                        logdir / f"heatmap_{pbar.n:08d}.png",
-                    )
+                # Use qd_archive for QD heatmap
+                save_heatmap(
+                    scheduler.archive, logdir / f"heatmap_{pbar.n:08d}.png"
+                )
 
     # After qd loop finishes, exports all eligible trajectories to a lerobot
     # dataset

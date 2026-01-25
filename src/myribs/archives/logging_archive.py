@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class LoggingArchive(ArchiveBase):
     """Log archive that does not implement QD space elitism and simply saves
-    everything that it got. This class is useful for saving results from 
+    everything that it got. This class is useful for saving results from
     domain randomization while staying consistent with pyribs.
     """
 
@@ -67,13 +67,13 @@ class LoggingArchive(ArchiveBase):
 
         hash = hashlib.sha256(measures.tobytes()).digest()
         hash_value = int.from_bytes(hash, byteorder="big")
-        index = hash_value % (self._cells + 1)
+        index = hash_value % self._cells
 
         occupied, _ = self._store.retrieve(index)
 
         num_hash_retry = 0
         while occupied:
-            index += 1
+            index = (index + 1) % self._cells
             occupied, _ = self._store.retrieve(index)
             num_hash_retry += 1
             if num_hash_retry > self._cells:
@@ -89,7 +89,9 @@ class LoggingArchive(ArchiveBase):
             {
                 "solution": solution,
                 "objective": objective,
-                "measures": np.expand_dims(indices, axis=1),  # Saves indices instead of measures
+                "measures": np.expand_dims(
+                    indices, axis=1
+                ),  # Saves indices instead of measures
                 **fields,
             },
         )

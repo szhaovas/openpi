@@ -1,4 +1,14 @@
-archive:
+# For QD visualization and metrics.
+# In the case of cma-mae, also provides x0 in case of restart.
+qd_archive:
+  _target_: ribs.archives.GridArchive
+  dims: [100, 100]
+  ranges: [[-3,3], [-3,3]] # change this to [[0,1], [0,1]] for spread_similarity measures
+  seed: ${seed}
+
+# For saving all results found throughout the search.
+# This is needed because QD archive implements elitism and may discard past results if better alternatives are found.
+logging_archive:
   _target_: src.myribs.archives.LoggingArchive
   starting_cells: ${oc.mul:2, ${oc.add:${collect_embedding_num_evals}, ${env_search_num_evals}}} # 2 * evaluation budget to make sure hashing succeeds
 
@@ -6,6 +16,8 @@ emitter:
   _target_: src.myribs.emitters.FixedGaussianEmitter
   sigma: 0.02
   batch_size: 8
+  seed: ${seed}
 
 scheduler:
   _target_: src.myribs.schedulers.SchedulerExternal
+  num_active: 1
