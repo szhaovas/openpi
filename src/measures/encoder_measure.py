@@ -1,5 +1,4 @@
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Type, Union
 
@@ -15,27 +14,11 @@ from src.dataset_utils import (
     padded_embedding_collate,
 )
 
-from ._lstmvae import LSTMVAE, lstmvae_loss
-from ._vae import VAE, vae_loss
+from .encoders._lstmvae import LSTMVAE, lstmvae_loss
+from .encoders._vae import VAE, vae_loss
+from .measure_model import MeasureModel, ModelConfig, TrainingConfig
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class EncoderModelConfig:
-    model_type: str
-    input_dim: int
-    hidden_dim: int
-    latent_dim: int
-
-
-@dataclass
-class EncoderTrainingConfig:
-    training_dataset_path: str
-    batch_size: int
-    num_train_epochs: int
-    learning_rate: float
-    save_to: Optional[str]
 
 
 MODEL_REGISTRY: Dict[str, Type[Union[VAE, LSTMVAE]]] = {
@@ -44,44 +27,25 @@ MODEL_REGISTRY: Dict[str, Type[Union[VAE, LSTMVAE]]] = {
 }
 
 
-class EncoderManager:
+class EncoderMeasure(MeasureModel):
     def __init__(
         self,
         ckpt_path: Optional[str] = None,
-        model_cfg: Optional[EncoderModelConfig] = None,
-        train_cfg: Optional[EncoderTrainingConfig] = None,
+        model_cfg: Optional[ModelConfig] = None,
+        train_cfg: Optional[TrainingConfig] = None,
     ):
-        """Handles initialization and training of autoencoders. Also exposes
-        :meth:`encode`, which returns the latent embeddings from the current
-        autoencoder.
-
-        Args:
-            One of:
-                - ckpt_path
-                    - An autoencoder is directly loaded from the checkpoint
-                - (model_cfg + train_cfg)
-                    - Initializes and trains a fresh autoencoder
-        """
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        if ckpt_path is not None:
-            self._init_encoder_from_checkpoint(Path(ckpt_path))
-        elif model_cfg is not None and train_cfg is not None:
-            self._init_encoder(model_cfg)
-            self.model_cfg = model_cfg
-            logger.warning(
-                "Since no checkpoint is specified, an encoder will be trained from scratch"
-            )
-            self._train_encoder(train_cfg)
-        else:
-            raise ValueError(
-                "Provide either ckpt_path OR (model_cfg + train_cfg)"
-            )
+        super().__init__(ckpt_path, model_cfg, train_cfg)
 
         self.model.eval()
 
-    def _init_encoder(self, model_cfg: EncoderModelConfig) -> None:
+    def _init(self, model_cfg: ModelConfig) -> None:
         model_type = model_cfg.model_type
+        if model_type not in ["vae", "lstm_vae"]:
+            raise ValueError(
+                f"Unknown model_type {model_type} (must be one of {['vae', 'lstm_vae']})"
+            )
         model_cls = MODEL_REGISTRY[model_type]
         self.model = model_cls(
             input_dim=model_cfg.input_dim,
@@ -89,13 +53,13 @@ class EncoderManager:
             latent_dim=model_cfg.latent_dim,
         ).to(self.device)
 
-    def _init_encoder_from_checkpoint(self, path: Path) -> None:
+    def _init_from_checkpoint(self, path: Path) -> None:
         checkpoint = torch.load(path, map_location="cpu")
         self.model_cfg = checkpoint["model_cfg"]
-        self._init_encoder(self.model_cfg)
+        self._init(self.model_cfg)
         self.model.load_state_dict(checkpoint["state_dict"])
 
-    def _train_encoder(self, train_cfg: EncoderTrainingConfig) -> None:
+    def _train(self, train_cfg: TrainingConfig) -> None:
         dataset = TempDataset(dataset_dir=Path(train_cfg.training_dataset_path))
 
         if isinstance(self.model, VAE):
@@ -161,14 +125,15 @@ class EncoderManager:
         logger.warning(f"Saved encoder checkpoint to {path}")
 
     @torch.no_grad()
-    def encode(self, trajectories: List[Trajectory]) -> NDArray:
+    def compute_measures(self, trajectories: List[Trajectory]) -> NDArray:
         if isinstance(self.model, VAE):
             x = embedding_collate(trajectories).to(self.device)
             z, _, _ = self.model(x)
         elif isinstance(self.model, LSTMVAE):
-            x = padded_embedding_collate(trajectories).to(self.device)
+            x = padded_embedding_collate(trajectories)
             z, _, _ = self.model(
-                x["padded_embeddings"], seq_len=x["pre_pad_lengths"]
+                x["padded_embeddings"].to(self.device),
+                seq_len=x["pre_pad_lengths"].to(self.device),
             )
         else:
             raise RuntimeError

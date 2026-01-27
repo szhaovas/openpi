@@ -14,7 +14,7 @@ from numpy.typing import NDArray
 
 from libero.libero import benchmark
 from src.dataset_utils import Trajectory
-from src.encoder import EncoderManager
+from src.measures import MeasureModel
 from src.vla_client.websocket_client_policy import WebsocketClientPolicy
 
 logger = logging.getLogger(__name__)
@@ -109,7 +109,7 @@ class LiberoSpatialEval:
         seed: int = 42,
         dask_client: Optional[Client] = None,
         repair_config: Optional[Dict] = None,
-        measure_encoder: Optional[EncoderManager] = None,
+        measure_model: Optional[MeasureModel] = None,
         **kwargs,
     ):
         self.task_id = task_id
@@ -125,11 +125,11 @@ class LiberoSpatialEval:
                 f"Unknown measure_func {measure_func} (must be one of {[None, 'spread_similarity', 'policy_embedding']})"
             )
         if measure_func == "policy_embedding":
-            if measure_encoder is None:
+            if measure_model is None:
                 raise ValueError(
-                    "If measure_func='policy_embedding', measure_encoder must also be set"
+                    "If measure_func='policy_embedding', measure_model must also be set"
                 )
-            self._measure_enc = measure_encoder
+            self._measure_model = measure_model
         self.measure_func = measure_func
 
         self.num_trials_per_sol = num_trials_per_sol
@@ -258,7 +258,7 @@ class LiberoSpatialEval:
         elif self.measure_func == "spread_similarity":
             measures = np.array([spread, similarity])
         elif self.measure_func == "policy_embedding":
-            measures = self._measure_enc.encode(trajectories)
+            measures = self._measure_model.compute_measures(trajectories)
             # Average embeddings across all rollouts on this solution
             measures = np.mean(measures, axis=0)
         else:
@@ -316,7 +316,7 @@ class LiberoSpatialEval:
     def get_single_trajectories(
         self, solutions: np.ndarray
     ) -> List[Trajectory]:
-        """Useful for collecting embeddings for autoencoder training. We define
+        """Useful for collecting embeddings for measure model training. We define
         this seperately from :meth:`evaluate` because each solution only gets
         evaluated once when collecting embeddings and it no longer makes sense
         to parallelize by rollouts. Instead, this function parallelizes by

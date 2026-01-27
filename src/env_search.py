@@ -7,6 +7,7 @@ import re
 from functools import reduce
 from operator import add, mul
 from pathlib import Path
+from typing import Union
 
 import hydra
 import matplotlib.pyplot as plt
@@ -15,8 +16,8 @@ import tqdm
 from dask.distributed import Client, LocalCluster
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
-from ribs.archives import GridArchive
-from ribs.visualize import grid_archive_heatmap
+from ribs.archives import CVTArchive, GridArchive
+from ribs.visualize import cvt_archive_heatmap, grid_archive_heatmap
 from scipy.spatial.distance import pdist
 from vendi_score import vendi
 
@@ -48,7 +49,7 @@ def _extract_reload_nevals(reload_dir: str) -> int:
     return reload_nevals
 
 
-def save_heatmap(archive: GridArchive, heatmap_path: str):
+def save_heatmap(archive: Union[GridArchive, CVTArchive], heatmap_path: str):
     """Saves a heatmap of the archive to the given path.
 
     Args:
@@ -56,7 +57,12 @@ def save_heatmap(archive: GridArchive, heatmap_path: str):
         heatmap_path: Image path for the heatmap.
     """
     plt.figure(figsize=(8, 6))
-    grid_archive_heatmap(archive, vmin=0, vmax=1, cmap="viridis")
+    if isinstance(archive, GridArchive):
+        grid_archive_heatmap(archive, vmin=0, vmax=1, cmap="viridis")
+    elif isinstance(archive, CVTArchive):
+        cvt_archive_heatmap(archive, vmin=0, vmax=1, cmap="viridis")
+    else:
+        raise ValueError
     plt.tight_layout()
     plt.savefig(heatmap_path)
     plt.close(plt.gcf())
@@ -181,7 +187,7 @@ def main(cfg: DictConfig):
                     np.int32,
                 ),  # store task_id for each env for later eval
                 "embedding": (
-                    (cfg.eval.measure_encoder.model_cfg.input_dim,),
+                    (cfg.eval.measure_model.model_cfg.input_dim,),
                     np.float32,
                 ),
             },
@@ -198,7 +204,7 @@ def main(cfg: DictConfig):
                     np.int32,
                 ),  # store task_id for each env for later eval
                 "embedding": (
-                    (cfg.eval.measure_encoder.model_cfg.input_dim,),
+                    (cfg.eval.measure_model.model_cfg.input_dim,),
                     np.float32,
                 ),
             },
@@ -226,7 +232,7 @@ def main(cfg: DictConfig):
             result_archive=logging_archive,
         )
 
-        # Collect some embeddings to train an autoencoder for latent representations
+        # Collect some embeddings to train a measure model for latent representations
         # Not needed by domain randomization itself but still useful for logging and visualization
         collect_embedding_config = hydra.compose(
             config_name="main",
@@ -237,7 +243,7 @@ def main(cfg: DictConfig):
             ],
         )
         collect_embeddings(collect_embedding_config)
-        encoder_manager = instantiate(cfg.eval.measure_encoder)
+        measure_model = instantiate(cfg.eval.measure_model)
 
         with open(summary_filename, "w") as summary_file:
             writer = csv.writer(summary_file)
@@ -265,9 +271,9 @@ def main(cfg: DictConfig):
         ) as f:
             scheduler = pkl.load(f)
 
-        encoder_manager = instantiate(
-            cfg.eval.measure_encoder,
-            ckpt_path=logdir / "encoder_ckpt.pt",
+        measure_model = instantiate(
+            cfg.eval.measure_model,
+            ckpt_path=logdir / "measure_ckpt.pt",
         )
 
     temp_succ_dataset = TempDataset(dataset_dir=logdir / "succ_dataset")
@@ -290,7 +296,7 @@ def main(cfg: DictConfig):
             cfg.eval.task_eval,
             task_id=tid,
             dask_client=client,
-            measure_encoder=encoder_manager,
+            measure_model=measure_model,
         )
         for tid in range(10)
     ]
@@ -422,9 +428,10 @@ def main(cfg: DictConfig):
                     writer.writerow(data)
 
                 # Use qd_archive for QD heatmap
-                save_heatmap(
-                    scheduler.archive, logdir / f"heatmap_{pbar.n:08d}.png"
-                )
+                if scheduler.archive.measure_dim <= 2:
+                    save_heatmap(
+                        scheduler.archive, logdir / f"heatmap_{pbar.n:08d}.png"
+                    )
 
     # After qd loop finishes, exports all eligible trajectories to a lerobot
     # dataset

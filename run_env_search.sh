@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-EXP_NAME=domain_randomization # cma_mae or domain_randomization
+EXP_NAME=cma_mae # cma_mae or domain_randomization
 NUM_SERVERS=3 # By default, this sets cfg.eval.task_eval.num_trials_per_sol
 SERVER_PORT_START=8004
 GPU_ID_START=3
