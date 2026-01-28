@@ -8,3 +8,6 @@
 [submodule "openpi_old"]
 	path = openpi_old
 	url = https://github.com/Physical-Intelligence/openpi.git
+[submodule "openvla"]
+	path = openvla
+	url = https://github.com/openvla/openvla.git
