@@ -140,13 +140,19 @@ class TempDataset(Dataset):
 
         self._num_eps += 1
 
-    def convert_to_lerobot(self, repo_id: str) -> LeRobotDataset:
+    def convert_to_lerobot(
+        self, repo_id: str, max_traj_len: Optional[int] = None
+    ) -> LeRobotDataset:
         """Converts this dataset to LeRobot format suitable for openpi finetuning
 
         Args:
-            repo_id (str): The repo ID that determines where the output dataset
+            repo_id: The repo ID that determines where the output dataset
                 will be saved. By default, the save location will be
                 ``HF_LEROBOT_HOME / repo_id``
+            max_traj_len: Only trajectories shorter than ``max_traj_len`` will
+                get exported. This is for filtering out low-quality successful
+                trajectories.
+
 
         Returns:
             dataset (LeRobotDataset): The output dataset in LeRobot format.
@@ -168,24 +174,29 @@ class TempDataset(Dataset):
         )
 
         for trajectory in tqdm(self):
-            with _suppress_tqdm():
-                for image, wrist_image, state, action in zip(
-                    trajectory.image,
-                    trajectory.wrist_image,
-                    trajectory.state,
-                    trajectory.action,
-                ):
-                    dataset.add_frame(
-                        frame={
-                            "image": image,
-                            "wrist_image": wrist_image,
-                            "state": state,
-                            "actions": action,
-                        },
-                        task=trajectory.prompt,
-                    )
+            if max_traj_len is None or len(trajectory.state) < max_traj_len:
+                with _suppress_tqdm():
+                    for image, wrist_image, state, action in zip(
+                        trajectory.image,
+                        trajectory.wrist_image,
+                        trajectory.state,
+                        trajectory.action,
+                    ):
+                        dataset.add_frame(
+                            frame={
+                                "image": image,
+                                "wrist_image": wrist_image,
+                                "state": state.astype(
+                                    lerobot_dataset_features["state"]["dtype"]
+                                ),
+                                "actions": action.astype(
+                                    lerobot_dataset_features["state"]["dtype"]
+                                ),
+                            },
+                            task=trajectory.prompt,
+                        )
 
-                dataset.save_episode()
+                    dataset.save_episode()
 
         print(f"Saved dataset to {HF_LEROBOT_HOME / repo_id}")
 
@@ -213,9 +224,10 @@ def _suppress_tqdm():
 def embedding_collate(batch: Iterable[Trajectory]) -> torch.Tensor:
     embeddings = []
     for traj in batch:
-        embeddings.append(
-            torch.tensor(traj.embedding[0])
-        )  # Takes 1st embedding
+        if len(traj.embedding) > 0:
+            embeddings.append(
+                torch.tensor(traj.embedding[0])
+            )  # Takes 1st embedding
 
     return torch.stack(embeddings, dim=0)
 

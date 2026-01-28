@@ -432,4 +432,5 @@ dill==0.3.8
 xxhash==3.6.0
 jsonlines==4.0.0
 av==16.1.0
+vendi-score==0.0.3
 -e libero/

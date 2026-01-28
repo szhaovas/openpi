@@ -10,7 +10,7 @@ from ribs.archives import GridArchive
 from ribs.visualize import grid_archive_heatmap
 
 from src.libero_spatial_eval import LiberoSpatialEval
-from src.qd_search import save_heatmap
+from src.env_search import save_heatmap
 
 
 def show_interactive_archive(archive: GridArchive, num_trials_per_sol: int = 4):

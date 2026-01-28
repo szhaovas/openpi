@@ -14,15 +14,11 @@ logger = logging.getLogger(__name__)
 
 class LoggingArchive(ArchiveBase):
     """Log archive that does not implement QD space elitism and simply saves
-    everything that it got. Additionally, it is initialized with a population
-    of seed_solutions, and :meth:`sample_elites` will always sample among these
-    seed_solutions. This class is useful for domain randomization experiments,
-    which always sample around some starting configurations (i.e. no stepping
-    stone) and saves all sampled solutions.
+    everything that it got. This class is useful for saving results from
+    domain randomization while staying consistent with pyribs.
     """
 
-    def __init__(self, seed_solutions, starting_cells, **kwargs):
-        _, solution_dim = seed_solutions.shape
+    def __init__(self, solution_dim, starting_cells, **kwargs):
         ArchiveBase.__init__(
             self,
             solution_dim=solution_dim,
@@ -33,11 +29,10 @@ class LoggingArchive(ArchiveBase):
             qd_score_offset=0.0,
             **kwargs,
         )
-        self._seed_solutions = seed_solutions.copy()
 
     def _upsize(self, new_cells):
         """Increases the number of cells in the archive to ``new_cells``. Since
-        each cell within the QD framework should only contain a single solution,
+        each cell within a pyribs archive should only contain a single solution,
         this effectively increases the maximum number of solutions the current
         archive may hold.
 
@@ -72,13 +67,13 @@ class LoggingArchive(ArchiveBase):
 
         hash = hashlib.sha256(measures.tobytes()).digest()
         hash_value = int.from_bytes(hash, byteorder="big")
-        index = hash_value % (self._cells + 1)
+        index = hash_value % self._cells
 
         occupied, _ = self._store.retrieve(index)
 
         num_hash_retry = 0
         while occupied:
-            index += 1
+            index = (index + 1) % self._cells
             occupied, _ = self._store.retrieve(index)
             num_hash_retry += 1
             if num_hash_retry > self._cells:
@@ -94,7 +89,9 @@ class LoggingArchive(ArchiveBase):
             {
                 "solution": solution,
                 "objective": objective,
-                "measures": indices,  # Saves indices instead of measures
+                "measures": np.expand_dims(
+                    indices, axis=1
+                ),  # Saves indices instead of measures
                 **fields,
             },
         )
@@ -165,12 +162,6 @@ class LoggingArchive(ArchiveBase):
             "status": np.zeros(1, dtype=np.int32),
             "value": np.zeros(1, dtype=np.float64),
         }
-
-    def sample_elites(self, n):
-        """Always samples among :attr:`_seed_solutions`."""
-        random_indices = self._rng.integers(len(self._seed_solutions), size=n)
-        _, elites = self._store.retrieve(random_indices)
-        return elites
 
     def retrieve(self, measures):
         raise NotImplementedError(
