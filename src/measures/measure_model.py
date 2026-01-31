@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from numpy.typing import NDArray
+from omegaconf import DictConfig
 
 from src.dataset_utils import Trajectory
 
@@ -15,17 +16,15 @@ logger = logging.getLogger(__name__)
 class ModelConfig:
     model_type: str
     input_dim: int
-    hidden_dim: int
     latent_dim: int
+    _extras: Optional[DictConfig]
 
 
 @dataclass
 class TrainingConfig:
     training_dataset_path: str
-    batch_size: int
-    num_train_epochs: int
-    learning_rate: float
     save_to: Optional[str]
+    _extras: Optional[DictConfig]
 
 
 class MeasureModel(ABC):

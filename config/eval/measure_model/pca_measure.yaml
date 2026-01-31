@@ -1,0 +1,14 @@
+_target_: src.measures.PCAMeasure
+ckpt_path: null
+model_cfg:
+  _target_: src.measures.ModelConfig
+  model_type: pca
+  # model_type: kpca
+  input_dim: 2048 # Pi0fast embedding size (after aggregating)
+  latent_dim: 2 # How many measures
+  _extras: null
+train_cfg:
+  _target_: src.measures.TrainingConfig
+  training_dataset_path: ${hydra:runtime.output_dir}/embeddings
+  save_to: ${hydra:runtime.output_dir}/measure_ckpt.pt
+  _extras: null

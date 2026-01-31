@@ -46,10 +46,11 @@ class EncoderMeasure(MeasureModel):
             raise ValueError(
                 f"Unknown model_type {model_type} (must be one of {['vae', 'lstm_vae']})"
             )
+        assert model_cfg._extras is not None
         model_cls = MODEL_REGISTRY[model_type]
         self.model = model_cls(
             input_dim=model_cfg.input_dim,
-            hidden_dim=model_cfg.hidden_dim,
+            hidden_dim=model_cfg._extras.hidden_dim,
             latent_dim=model_cfg.latent_dim,
         ).to(self.device)
 
@@ -60,6 +61,7 @@ class EncoderMeasure(MeasureModel):
         self.model.load_state_dict(checkpoint["state_dict"])
 
     def _train(self, train_cfg: TrainingConfig) -> None:
+        assert train_cfg._extras is not None
         dataset = TempDataset(dataset_dir=Path(train_cfg.training_dataset_path))
 
         if isinstance(self.model, VAE):
@@ -71,19 +73,19 @@ class EncoderMeasure(MeasureModel):
 
         data_loader = DataLoader(
             dataset,
-            batch_size=train_cfg.batch_size,
+            batch_size=train_cfg._extras.batch_size,
             shuffle=True,
             collate_fn=collate_fn,
             num_workers=4,
         )
 
         optimizer = torch.optim.Adam(
-            self.model.parameters(), lr=train_cfg.learning_rate
+            self.model.parameters(), lr=train_cfg._extras.learning_rate
         )
 
         self.model.train()
 
-        for i in tqdm.trange(0, train_cfg.num_train_epochs):
+        for i in tqdm.trange(0, train_cfg._extras.num_train_epochs):
             total_loss = 0.0
 
             for x in data_loader:
@@ -138,4 +140,11 @@ class EncoderMeasure(MeasureModel):
         else:
             raise RuntimeError
 
-        return z.cpu().numpy()
+        measures = (
+            z.cpu().numpy()
+        )  # standard distribution; mostly in range [-3, 3]
+        measures = (
+            measures / 6 + 0.5
+        )  # scales to range [0, 1] to stay consistent with other measures
+
+        return measures
