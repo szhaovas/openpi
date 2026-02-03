@@ -6,11 +6,12 @@ import numpy as np
 import plotly.graph_objects as go
 import tqdm
 from dash import Dash, Input, Output, dcc, html, no_update
-from ribs.archives import GridArchive
+from ribs.archives import ArchiveBase, GridArchive
 from ribs.visualize import grid_archive_heatmap
 
+from src.env_search import _extract_scheduler_nevals, save_heatmap
 from src.libero_spatial_eval import LiberoSpatialEval
-from src.env_search import save_heatmap
+from src.measures import PCAMeasure
 
 
 def show_interactive_archive(archive: GridArchive, num_trials_per_sol: int = 4):
@@ -129,48 +130,118 @@ def host_interactive_archive(
 
 
 def success_rates_on_envs(
-    env_archive: GridArchive,
+    env_archive: ArchiveBase,
     num_trials_per_sol: int = 4,
     heatmap_savepath="success_rates.png",
-    dummy_archive_savepath="success_rates.pkl",
+    archive_savepath="success_rates.pkl",
 ):
     evaluators = [
-        LiberoSpatialEval(task_id=tid, num_trials_per_sol=num_trials_per_sol)
+        LiberoSpatialEval(
+            task_id=tid,
+            objective_func="success_rate",
+            measure_func="spread_similarity",
+            num_trials_per_sol=num_trials_per_sol,
+        )
         for tid in range(10)
     ]
 
     dummy_archive = GridArchive(
         solution_dim=env_archive.solution_dim,
-        dims=env_archive.dims,
-        ranges=np.stack((env_archive.lower_bounds, env_archive.upper_bounds)).T,
+        dims=2,
+        ranges=[[0, 1], [0, 1]],
     )
 
-    for cell in tqdm(env_archive):
-        solution, _, measures, trajectories = evaluators[
-            cell["task_id"]
-        ].evaluate_single(solution=cell["solution"])
-
-        success_rate = 0
-        for traj in trajectories:
-            success_rate += traj.success / num_trials_per_sol
-
-        dummy_archive.add_single(
-            solution=solution, objective=success_rate, measures=measures
+    for cell in tqdm.tqdm(env_archive):
+        _, objective, measures, _ = evaluators[cell["task_id"]].evaluate_single(
+            solution=cell["solution"]
         )
 
-        with open(dummy_archive_savepath, "wb") as f:
+        dummy_archive.add_single(
+            solution=cell["solution"], objective=objective, measures=measures
+        )
+
+        with open(archive_savepath, "wb") as f:
             pkl.dump(dummy_archive, f)
 
     save_heatmap(dummy_archive, heatmap_savepath)
 
 
+def redraw_heatmap(
+    experiment_logdir: str,
+    encoder_ckpt_path: str,
+):
+    measure_model = PCAMeasure(ckpt_path=encoder_ckpt_path)
+
+    all_nevals = _extract_scheduler_nevals(experiment_logdir)
+
+    for filename, nevals in all_nevals.items():
+        print(filename)
+        with open(file=filename, mode="rb") as f:
+            archive = pkl.load(f).archive
+
+        dummy_archive = GridArchive(
+            solution_dim=archive.solution_dim,
+            dims=[100, 100],
+            ranges=[[0, 1], [0, 1]],
+        )
+
+        Z = measure_model.model.transform(archive.data("embedding"))
+        measures = (
+            Z - (measure_model.lb - 0.5 * (measure_model.ub - measure_model.lb))
+        ) / (2 * (measure_model.ub - measure_model.lb))
+
+        dummy_archive.add(
+            solution=archive.data("solution"),
+            objective=archive.data("objective"),
+            measures=measures,
+        )
+
+        save_heatmap(
+            dummy_archive, f"{experiment_logdir}/heatmap_{nevals:08d}.png"
+        )
+
+
 if __name__ == "__main__":
-    with open(
-        # Enter the scheduler checkpoint you want to visualize here
-        file="scheduler_00000500.pkl",
-        mode="rb",
-    ) as f:
-        archive = pkl.load(f).archive
-        # show_interactive_archive(archive, num_trials_per_sol=4)
-        host_interactive_archive(archive, num_trials_per_sol=4)
-        # success_rates_on_envs(archive, num_trials_per_sol=4)
+    # with open(
+    #     # Enter the scheduler checkpoint you want to visualize here
+    #     file="scheduler_00000500.pkl",
+    #     mode="rb",
+    # ) as f:
+    #     archive = pkl.load(f).archive
+    #     # show_interactive_archive(archive, num_trials_per_sol=4)
+    #     host_interactive_archive(archive, num_trials_per_sol=4)
+    #     # success_rates_on_envs(archive, num_trials_per_sol=4)
+
+    from sklearn.metrics.pairwise import rbf_kernel
+    from vendi_score import vendi
+
+    all_dists = []
+    all_nevals = []
+    for filename, nevals in _extract_scheduler_nevals(
+        "domain_randomization/"
+    ).items():
+        print(filename)
+        all_nevals.append(nevals)
+        with open(file=filename, mode="rb") as f:
+            archive_data = pkl.load(f).result_archive.data(
+                ["objective", "embedding"]
+            )
+            rbf_K = rbf_kernel(X=archive_data["embedding"], gamma=0.002)
+            emb_vendi_rbf = vendi.score_K(rbf_K, normalize=True)
+            qvendi = np.mean(archive_data["objective"]) * emb_vendi_rbf
+            all_dists.append(qvendi)
+            print(qvendi)
+    all_dists = np.array(all_dists)
+    all_dists = all_dists[np.argsort(all_nevals)]
+    print(all_dists)
+
+    # from pathlib import Path
+
+    # from src.dataset_utils import TempDataset
+
+    # temp_succ_dataset = TempDataset(
+    #     dataset_dir=Path("domain_randomization/succ_dataset/")
+    # )
+    # temp_succ_dataset.convert_to_lerobot(
+    #     "domain_randomization", max_traj_len=100
+    # )

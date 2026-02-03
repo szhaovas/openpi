@@ -70,7 +70,7 @@ class PCAMeasure(MeasureModel):
                 f,
             )
 
-        logger.warning(f"Saved kpca checkpoint to {path}")
+        logger.warning(f"Saved pca checkpoint to {path}")
 
     def compute_measures(self, trajectories: List[Trajectory]) -> NDArray:
         embeddings = embedding_collate(trajectories).detach().cpu().numpy()
