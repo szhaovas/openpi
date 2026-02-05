@@ -1,27 +1,7 @@
 defaults:
   - spread_similarity
+  - measure_model: pca_measure
   - _self_
 
 task_eval:
   measure_func: policy_embedding
-  
-# Make measure_model its own config since we only need 1 measure_model for all evaluators
-measure_model:
-  # _target_: src.measures.EncoderMeasure
-  _target_: src.measures.SVDMeasure
-  ckpt_path: null
-  model_cfg:
-    _target_: src.measures.ModelConfig
-    # model_type: vae
-    model_type: svd
-    input_dim: 2048 # Pi0fast embedding size (after aggregating)
-    hidden_dim: 128
-    latent_dim: 2 # How many measures
-  train_cfg:
-    _target_: src.measures.TrainingConfig
-    # training_dataset_path: ${hydra:runtime.output_dir}/embeddings
-    training_dataset_path: ./outputs/cma_mae/2026-01-27_002420/embeddings
-    batch_size: 32
-    num_train_epochs: 40
-    learning_rate: 0.01
-    save_to: ${hydra:runtime.output_dir}/measure_ckpt.pt

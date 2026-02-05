@@ -1,0 +1,18 @@
+_target_: src.measures.EncoderMeasure
+ckpt_path: null
+model_cfg:
+  _target_: src.measures.ModelConfig
+  model_type: vae
+  # model_type: lstm_vae
+  input_dim: 2048 # Pi0fast embedding size (after aggregating)
+  latent_dim: 2 # How many measures
+  _extras:
+    hidden_dim: 128
+train_cfg:
+  _target_: src.measures.TrainingConfig
+  training_dataset_path: ${hydra:runtime.output_dir}/embeddings
+  save_to: ${hydra:runtime.output_dir}/measure_ckpt.pt
+  _extras:
+    batch_size: 32
+    num_train_epochs: 40
+    learning_rate: 0.01

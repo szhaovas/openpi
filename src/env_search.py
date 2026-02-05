@@ -7,7 +7,7 @@ import re
 from functools import reduce
 from operator import add, mul
 from pathlib import Path
-from typing import Union
+from typing import Dict, Union
 
 import hydra
 import matplotlib.pyplot as plt
@@ -18,7 +18,8 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from ribs.archives import CVTArchive, GridArchive
 from ribs.visualize import cvt_archive_heatmap, grid_archive_heatmap
-from scipy.spatial.distance import pdist
+from sklearn.metrics import pairwise_distances
+from sklearn.metrics.pairwise import rbf_kernel
 from vendi_score import vendi
 
 from src.dataset_utils import TempDataset
@@ -27,26 +28,27 @@ from src.libero_spatial_eval import get_default_env_params
 logger = logging.getLogger(__name__)
 
 
-def _extract_reload_nevals(reload_dir: str) -> int:
-    """Extracts the number of evaluations from an experiment log folder by
-    finding the latest scheduler checkpoint and reading its number of
-    evaluations. A scheduler checkpoint is expected to be named after the
-    ``scheduler_[0-9]{8}.pkl`` format, in which the digits record its number
-    of evaluations. If unable to find such a checkpoint, returns 0.
-    """
-    all_scheduler_ckpt = glob.glob(f"{reload_dir}/scheduler_{'[0-9]'*8}.pkl")
+def _extract_scheduler_nevals(experiment_logdir: str) -> Dict[str, int]:
+    """Extracts the numbers of evaluations at all scheduler checkpoints within
+    an experiment log. Returns a dictionary matching checkpoint filenames with
+    extracted numbers of evaluations.
 
-    reload_nevals = 0
+    A scheduler checkpoint is expected to be named after the
+    ``scheduler_[0-9]{8}.pkl`` format, in which the digits record its number
+    of evaluations.
+    """
+    all_scheduler_ckpt = glob.glob(
+        f"{experiment_logdir}/scheduler_{'[0-9]'*8}.pkl"
+    )
+
+    result = {}
     pattern = r"scheduler_(\d{8})\.pkl"
     for filename in all_scheduler_ckpt:
         match = re.search(pattern, filename)
         if match:
-            reload_nevals = max(reload_nevals, int(match.group(1)))
+            result[filename] = int(match.group(1))
 
-    if reload_nevals == 0:
-        logger.warning("_extract_reload_nevals failed, returning 0")
-
-    return reload_nevals
+    return result
 
 
 def save_heatmap(archive: Union[GridArchive, CVTArchive], heatmap_path: str):
@@ -257,13 +259,16 @@ def main(cfg: DictConfig):
                     "Num.ValidEnv",
                     "Avg.EmbDist",
                     "Vendi-Score",
+                    "Vendi-Score(RBF)",
                     "QVendi-Score",
                 ]
             )
     else:
         logdir = Path(cfg.reload_from_dir)
         summary_filename = Path(cfg.reload_from_dir) / "summary.csv"
-        starting_nevals = _extract_reload_nevals(cfg.reload_from_dir)
+        starting_nevals = max(
+            _extract_scheduler_nevals(cfg.reload_from_dir).values()
+        )
 
         with open(
             file=logdir / f"scheduler_{starting_nevals:08d}.pkl",
@@ -303,7 +308,9 @@ def main(cfg: DictConfig):
 
     nevals_since_last_log = 0
     with tqdm.tqdm(
-        range(starting_nevals, cfg.env_search_num_evals + 1)
+        range(starting_nevals, cfg.env_search_num_evals + 1),
+        initial=starting_nevals,
+        total=cfg.env_search_num_evals + 1,
     ) as pbar:
         while pbar.n < pbar.total:
             solutions = scheduler.ask()
@@ -386,31 +393,36 @@ def main(cfg: DictConfig):
             )
             num_valid_env = np.sum(archive_data["objective"] > 0.01)
             avg_emb_dist = np.mean(
-                pdist(archive_data["embedding"], metric="euclidean")
+                pairwise_distances(
+                    X=archive_data["embedding"], metric="euclidean"
+                )
             )
-            emb_vendi = vendi.score_X(archive_data["embedding"], normalize=True)
+            rbf_K = rbf_kernel(
+                X=archive_data["embedding"], gamma=0.002
+            )  # gamma is chosen to match median embedding distance
+            emb_vendi = vendi.score_K(rbf_K, normalize=True)
             emb_qvendi = np.mean(archive_data["objective"]) * emb_vendi
 
             # Use qd_archive for QD metrics
             logger.info(
                 f"---------------------- Eval {pbar.n:08d} ----------------------\n"
-                f"\t QD-Score: {scheduler.archive.stats.qd_score}\n"
-                f"\t Coverage: {scheduler.archive.stats.coverage}\n"
-                f"\t Maximum : {scheduler.archive.stats.obj_max}\n"
-                f"\t Average : {scheduler.archive.stats.obj_mean}\n"
+                f"\t QD-Score     : {scheduler.archive.stats.qd_score}\n"
+                f"\t Coverage     : {scheduler.archive.stats.coverage}\n"
+                f"\t Maximum      : {scheduler.archive.stats.obj_max}\n"
+                f"\t Average      : {scheduler.archive.stats.obj_mean}\n"
                 f"\t Num.ValidEnv : {num_valid_env}\n"
-                f"\t Avg.EmbDist : {avg_emb_dist}\n"
-                f"\t Vendi-Score : {emb_vendi}\n"
+                f"\t Avg.EmbDist  : {avg_emb_dist}\n"
+                f"\t Vendi-Score  : {emb_vendi}\n"
                 f"\t QVendi-Score : {emb_qvendi}\n"
             )
 
-            final_itr = pbar.n == cfg.env_search_num_evals
+            final_itr = pbar.n == (cfg.env_search_num_evals + 1)
             if nevals_since_last_log > cfg.log_every or final_itr:
                 nevals_since_last_log = 0
-                pkl.dump(
-                    scheduler,
-                    open(logdir / f"scheduler_{pbar.n:08d}.pkl", "wb"),
-                )
+                with open(
+                    logdir / f"scheduler_{pbar.n:08d}.pkl", "wb"
+                ) as scheduler_file:
+                    pkl.dump(scheduler, scheduler_file)
 
                 with open(summary_filename, "a") as summary_file:
                     writer = csv.writer(summary_file)
@@ -435,7 +447,9 @@ def main(cfg: DictConfig):
 
     # After qd loop finishes, exports all eligible trajectories to a lerobot
     # dataset
-    temp_succ_dataset.convert_to_lerobot(cfg.lerobot_dataset_repo_id)
+    temp_succ_dataset.convert_to_lerobot(
+        cfg.lerobot_dataset_repo_id, max_traj_len=100
+    )
 
 
 if __name__ == "__main__":
