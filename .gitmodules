@@ -10,4 +10,4 @@
 	url = https://github.com/Physical-Intelligence/openpi.git
 [submodule "openvla"]
 	path = openvla
-	url = https://github.com/openvla/openvla.git
+	url = https://github.com/henrychen4/openvla.git
