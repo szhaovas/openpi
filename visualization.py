@@ -1,5 +1,6 @@
 import pickle as pkl
-from typing import Dict
+from pathlib import Path
+from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,6 +13,7 @@ from ribs.visualize import grid_archive_heatmap
 from src.env_search import _extract_scheduler_nevals, save_heatmap
 from src.libero_spatial_eval import LiberoSpatialEval
 from src.measures import PCAMeasure
+from src.myribs.archives import LoggingArchive
 
 
 def show_interactive_archive(archive: GridArchive, num_trials_per_sol: int = 4):
@@ -131,39 +133,43 @@ def host_interactive_archive(
 
 def success_rates_on_envs(
     env_archive: ArchiveBase,
-    num_trials_per_sol: int = 4,
-    heatmap_savepath="success_rates.png",
-    archive_savepath="success_rates.pkl",
+    vla_server_urls: List[str],
 ):
     evaluators = [
         LiberoSpatialEval(
             task_id=tid,
             objective_func="success_rate",
-            measure_func="spread_similarity",
-            num_trials_per_sol=num_trials_per_sol,
+            num_trials_per_sol=len(vla_server_urls),
+            vla_server_urls=vla_server_urls,
         )
         for tid in range(10)
     ]
 
-    dummy_archive = GridArchive(
+    num_envs_per_task = len(env_archive) // 10
+    success_rates_archive = GridArchive(
         solution_dim=env_archive.solution_dim,
-        dims=2,
-        ranges=[[0, 1], [0, 1]],
+        dims=[10, num_envs_per_task],
+        ranges=[[0, 10], [0, num_envs_per_task]],
     )
 
+    env_counters = [0] * 10
     for cell in tqdm.tqdm(env_archive):
-        _, objective, measures, _ = evaluators[cell["task_id"]].evaluate_single(
+        _, objective, _, _ = evaluators[cell["task_id"]].evaluate(
             solution=cell["solution"]
         )
 
-        dummy_archive.add_single(
-            solution=cell["solution"], objective=objective, measures=measures
+        success_rates_archive.add_single(
+            solution=cell["solution"],
+            objective=objective,
+            measures=[cell["task_id"], env_counters[cell["task_id"]]],
         )
 
-        with open(archive_savepath, "wb") as f:
-            pkl.dump(dummy_archive, f)
+        env_counters[cell["task_id"]] += 1
 
-    save_heatmap(dummy_archive, heatmap_savepath)
+    with open("success_rates.pkl", "wb") as f:
+        pkl.dump(success_rates_archive, f)
+
+    save_heatmap(success_rates_archive, "success_rates.png")
 
 
 def redraw_heatmap(
@@ -174,6 +180,8 @@ def redraw_heatmap(
 
     all_nevals = _extract_scheduler_nevals(experiment_logdir)
 
+    all_qd_scores = []
+    all_coverages = []
     for filename, nevals in all_nevals.items():
         print(filename)
         with open(file=filename, mode="rb") as f:
@@ -196,9 +204,18 @@ def redraw_heatmap(
             measures=measures,
         )
 
-        save_heatmap(
-            dummy_archive, f"{experiment_logdir}/heatmap_{nevals:08d}.png"
-        )
+        all_qd_scores.append(dummy_archive.stats.qd_score)
+        all_coverages.append(dummy_archive.stats.coverage)
+
+        # save_heatmap(
+        #     dummy_archive, f"{experiment_logdir}/heatmap_{nevals:08d}.png"
+        # )
+    all_qd_scores = np.array(all_qd_scores)
+    all_qd_scores = all_qd_scores[np.argsort(list(all_nevals.values()))]
+    print(all_qd_scores)
+    all_coverages = np.array(all_coverages)
+    all_coverages = all_coverages[np.argsort(list(all_nevals.values()))]
+    print(all_coverages)
 
 
 if __name__ == "__main__":
@@ -212,30 +229,28 @@ if __name__ == "__main__":
     #     host_interactive_archive(archive, num_trials_per_sol=4)
     #     # success_rates_on_envs(archive, num_trials_per_sol=4)
 
-    from sklearn.metrics.pairwise import rbf_kernel
-    from vendi_score import vendi
+    # from sklearn.metrics.pairwise import rbf_kernel
+    # from vendi_score import vendi
 
-    all_dists = []
-    all_nevals = []
-    for filename, nevals in _extract_scheduler_nevals(
-        "domain_randomization/"
-    ).items():
-        print(filename)
-        all_nevals.append(nevals)
-        with open(file=filename, mode="rb") as f:
-            archive_data = pkl.load(f).result_archive.data(
-                ["objective", "embedding"]
-            )
-            rbf_K = rbf_kernel(X=archive_data["embedding"], gamma=0.002)
-            emb_vendi_rbf = vendi.score_K(rbf_K, normalize=True)
-            qvendi = np.mean(archive_data["objective"]) * emb_vendi_rbf
-            all_dists.append(qvendi)
-            print(qvendi)
-    all_dists = np.array(all_dists)
-    all_dists = all_dists[np.argsort(all_nevals)]
-    print(all_dists)
-
-    # from pathlib import Path
+    # all_dists = []
+    # all_nevals = []
+    # for filename, nevals in _extract_scheduler_nevals(
+    #     "domain_randomization/"
+    # ).items():
+    #     print(filename)
+    #     all_nevals.append(nevals)
+    #     with open(file=filename, mode="rb") as f:
+    #         archive_data = pkl.load(f).result_archive.data(
+    #             ["objective", "embedding"]
+    #         )
+    #         rbf_K = rbf_kernel(X=archive_data["embedding"], gamma=0.002)
+    #         emb_vendi_rbf = vendi.score_K(rbf_K, normalize=True)
+    #         qvendi = np.mean(archive_data["objective"]) * emb_vendi_rbf
+    #         all_dists.append(qvendi)
+    #         print(qvendi)
+    # all_dists = np.array(all_dists)
+    # all_dists = all_dists[np.argsort(all_nevals)]
+    # print(all_dists)
 
     # from src.dataset_utils import TempDataset
 
@@ -245,3 +260,8 @@ if __name__ == "__main__":
     # temp_succ_dataset.convert_to_lerobot(
     #     "domain_randomization", max_traj_len=100
     # )
+
+    redraw_heatmap(
+        "domain_randomization/",
+        "outputs/cma_mae/2026-01-31_204605/measure_ckpt.pt",
+    )

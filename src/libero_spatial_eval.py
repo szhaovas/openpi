@@ -9,10 +9,10 @@ from typing import Dict, List, Optional, Tuple
 import imageio
 import numpy as np
 from dask.distributed import Client
-from libero.libero.envs import OffScreenRenderEnv
 from numpy.typing import NDArray
 
 from libero.libero import benchmark
+from libero.libero.envs import OffScreenRenderEnv
 from src.dataset_utils import Trajectory
 from src.measures import MeasureModel
 from src.vla_client.websocket_client_policy import WebsocketClientPolicy
@@ -105,7 +105,7 @@ class LiberoSpatialEval:
         max_steps: int = 220,
         num_steps_wait: int = 10,
         replan_steps: int = 5,
-        server_port_start: int = 8000,
+        vla_server_urls: List[str] = ["0.0.0.0:8000"],
         seed: int = 42,
         dask_client: Optional[Client] = None,
         repair_config: Optional[Dict] = None,
@@ -136,12 +136,19 @@ class LiberoSpatialEval:
         self.max_steps = max_steps
         self.num_steps_wait = num_steps_wait
         self.replan_steps = replan_steps
-        self.server_port_start = server_port_start
+        self.vla_server_urls = vla_server_urls
         self._seed = seed
 
         self._dask_client = dask_client
         if self._dask_client is not None:
             nworkers = len(self._dask_client.scheduler_info()["workers"])
+            if len(self.vla_server_urls) != nworkers:
+                raise ValueError(
+                    "Expected number of VLA server urls to equal number of"
+                    f"dask client workers {nworkers}; actually got "
+                    f"{len(self.vla_server_urls)} VLA server urls"
+                )
+
             if self.num_trials_per_sol > nworkers:
                 logger.warning(
                     f"num_trials_per_sol={self.num_trials_per_sol} exceeds the number of workers {nworkers}"
@@ -211,7 +218,7 @@ class LiberoSpatialEval:
                 self._dask_client.submit(
                     rollout,
                     env_params=repaired_solution,
-                    vla_client_port=self.server_port_start + trial_id,
+                    vla_server_url=self.vla_server_urls[trial_id],
                     eval_stub=self._eval_stub,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
@@ -230,7 +237,7 @@ class LiberoSpatialEval:
             for trial_id in range(self.num_trials_per_sol):
                 succ, traj = rollout(
                     env_params=repaired_solution,
-                    vla_client_port=self.server_port_start,
+                    vla_server_url=self.vla_server_urls[0],
                     eval_stub=self._eval_stub,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
@@ -329,7 +336,7 @@ class LiberoSpatialEval:
                 self._dask_client.submit(
                     rollout,
                     env_params=sol,
-                    vla_client_port=self.server_port_start + sol_id,
+                    vla_server_url=self.vla_server_urls[sol_id],
                     eval_stub=self._eval_stub,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
@@ -346,7 +353,7 @@ class LiberoSpatialEval:
             for _, sol in enumerate(solutions):
                 _, traj = rollout(
                     env_params=sol,
-                    vla_client_port=self.server_port_start,
+                    vla_server_url=self.vla_server_urls[0],
                     eval_stub=self._eval_stub,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
@@ -360,7 +367,7 @@ class LiberoSpatialEval:
 
 def rollout(
     env_params: np.ndarray,
-    vla_client_port: int,
+    vla_server_url: str,
     eval_stub: partial,
     max_steps: int,
     num_steps_wait: int,
@@ -375,8 +382,8 @@ def rollout(
         env_params (np.ndarray): Array of shape (solution_dim,) containing a single
             solution to be evaluated.
         eval_stub (partial): ``eval_stub(env_params)`` returns a Libero env.
-        vla_client_port (int): On which localhost port should this rollout
-            contact the VLA server.
+        vla_server_url (str): On which host ip and port should this rollout
+            contact the VLA server. e.g. 0.0.0.0:8000
         max_steps (int): The maximum number of rollout steps before the task is
             failed.
         num_steps_wait (int): How many steps to wait at the start before VLA
@@ -410,7 +417,8 @@ def rollout(
         # TODO: How to handle solutions that fail to evaluate
         return False, Trajectory(success=False)
 
-    vla_client = WebsocketClientPolicy("0.0.0.0", vla_client_port)
+    ip, port = vla_server_url.split(":")
+    vla_policy = WebsocketClientPolicy(ip, int(port))
 
     if video_logdir is not None:
         # ID each sol with datetime to prevent overwriting
@@ -448,7 +456,7 @@ def rollout(
                 "prompt": env.language_instruction,
             }
 
-            inference_obj = vla_client.infer(element)
+            inference_obj = vla_policy.infer(element)
             trajectory.embedding.append(
                 np.mean(inference_obj["pre_logits"], axis=0)
             )
@@ -482,6 +490,6 @@ def rollout(
             fps=10,
         )
 
-    vla_client._ws.close()
+    vla_policy._ws.close()
 
     return trajectory.success, trajectory

@@ -4,11 +4,11 @@ task_eval:
   _target_: src.libero_spatial_eval.LiberoSpatialEval
   objective_func: entropy
   measure_func: spread_similarity
-  num_trials_per_sol: ${oc.env_int:NUM_SERVERS}
+  num_trials_per_sol: ${oc.len:${.vla_server_urls}}
   max_steps: 220
   num_steps_wait: 10
   replan_steps: 5
-  server_port_start: ${oc.env_int:SERVER_PORT_START}
+  vla_server_urls: ${oc.env_csv:VLA_SERVER_URLS}
   seed: ${seed}
   repair_config:
     time_limit: 1500

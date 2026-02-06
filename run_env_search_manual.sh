@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
+# Alternate version of run_env_search that allows user to start each VLA server 
+# manually; useful when GPUs used by each VLA server aren't on the same cluster
 
 EXP_NAME=$1 # cma_mae or domain_randomization
 VLA_SERVER_URLS=(
-  "0.0.0.0:8003" # space after each url string
-  "0.0.0.0:8004" # this script assumes ip to be local host
-  "0.0.0.0:8005" 
+  "10.136.109.136:8003" # space after each url string
+  "0.0.0.0:8003" # ip doesn't have to be local host
 ) # By default, the number of urls sets cfg.eval.task_eval.num_trials_per_sol
-GPU_IDs=(2 3 4) # should have the same length as VLA_SERVER_URLS
 
 # Check if session exists
 if tmux has-session -t "$EXP_NAME" 2>/dev/null; then
@@ -25,19 +25,17 @@ uv run -m src.env_search envgen=$EXP_NAME
 " C-m
 
 num_servers=${#VLA_SERVER_URLS[@]}
-# Spawns num_servers panes each calling serve_policy.py with its own GPU
-for server_id in $(seq 0 $((num_servers-1)))
+# Spawns a pane for each VLA server; user needs to go to each pane to launch 
+# the server manually. The main process (QD) will wait for all VLA servers to 
+# be launched
+for server_id in $(seq 1 $num_servers)
 do
-  if ((server_id==0)); then
+  if ((server_id==1)); then
     tmux split-window -h -t "$EXP_NAME"
     tmux select-pane -t "$EXP_NAME:.1"
   else
     tmux split-window -v
   fi
-  tmux send-keys -t "$EXP_NAME:0.$((server_id+1))" "
-    cd openpi
-    CUDA_VISIBLE_DEVICES="${GPU_IDs[$server_id]}" uv run scripts/serve_policy.py --env LIBERO --port "${VLA_SERVER_URLS[$server_id]##*:}"
-  " C-m
 done
 
 # Make the server panes have equal height

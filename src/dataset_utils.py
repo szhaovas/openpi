@@ -1,4 +1,5 @@
 import contextlib
+import glob
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,7 +58,7 @@ class TempDataset(Dataset):
         self.dataset_dir = dataset_dir
 
         if self.dataset_dir.is_dir():
-            self._num_eps = sum(1 for _ in self.dataset_dir.iterdir())
+            self._num_eps = len(glob.glob(f"{self.dataset_dir}/ep_{'[0-9]'*5}"))
         else:
             dataset_dir.mkdir(parents=True)
             self._num_eps = 0

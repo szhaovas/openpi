@@ -75,8 +75,9 @@ def add_omegaconf_resolvers():
         "oc.env_int", lambda name: int(os.environ[name])
     )
     OmegaConf.register_new_resolver(
-        "oc.env_isone", lambda name: int(os.environ[name]) == 1
+        "oc.env_csv", lambda name: os.environ[name].split(",")
     )
+    OmegaConf.register_new_resolver("oc.equals", lambda x, y: x == y)
     OmegaConf.register_new_resolver("oc.len", lambda x: len(x))
     OmegaConf.register_new_resolver(
         "oc.add", lambda *args: reduce(add, args, 1)
@@ -99,9 +100,9 @@ def seed_everything(seed: int):
 
 
 def collect_embeddings(colemb_cfg: DictConfig):
-    embedding_dataset = TempDataset(
-        dataset_dir=Path(colemb_cfg.save_embeddings_to)
-    )
+    embedding_logdir = Path(colemb_cfg.save_embeddings_to)
+
+    embedding_dataset = TempDataset(dataset_dir=embedding_logdir)
 
     archive = instantiate(
         colemb_cfg.envgen.logging_archive,
@@ -165,6 +166,9 @@ def collect_embeddings(colemb_cfg: DictConfig):
                 injected=np.full(solutions.shape[0], False),
             )
 
+    with open(embedding_logdir / "test_scenarios.pkl", "wb") as archive_file:
+        pkl.dump(scheduler.archive, archive_file)
+
 
 @hydra.main(version_base=None, config_path="../config", config_name="main")
 def main(cfg: DictConfig):
@@ -176,7 +180,7 @@ def main(cfg: DictConfig):
             hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
         )
         summary_filename = logdir / "summary.csv"
-        starting_nevals = 1
+        starting_nevals = 0
 
         # QD archive for QD visualization and metrics.
         # In the case of cma-mae, also provides x0 in case of restart.
@@ -259,7 +263,6 @@ def main(cfg: DictConfig):
                     "Num.ValidEnv",
                     "Avg.EmbDist",
                     "Vendi-Score",
-                    "Vendi-Score(RBF)",
                     "QVendi-Score",
                 ]
             )
@@ -308,11 +311,11 @@ def main(cfg: DictConfig):
 
     nevals_since_last_log = 0
     with tqdm.tqdm(
-        range(starting_nevals, cfg.env_search_num_evals + 1),
+        range(starting_nevals, cfg.env_search_num_evals),
         initial=starting_nevals,
-        total=cfg.env_search_num_evals + 1,
+        total=cfg.env_search_num_evals,
     ) as pbar:
-        while pbar.n < pbar.total:
+        while pbar.n <= pbar.total:
             solutions = scheduler.ask()
 
             (
@@ -416,7 +419,7 @@ def main(cfg: DictConfig):
                 f"\t QVendi-Score : {emb_qvendi}\n"
             )
 
-            final_itr = pbar.n == (cfg.env_search_num_evals + 1)
+            final_itr = pbar.n == pbar.total
             if nevals_since_last_log > cfg.log_every or final_itr:
                 nevals_since_last_log = 0
                 with open(
