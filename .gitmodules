@@ -11,3 +11,6 @@
 [submodule "openvla"]
 	path = openvla
 	url = https://github.com/henrychen4/openvla.git
+[submodule "openvla-oft"]
+	path = openvla-oft
+	url = https://github.com/henyhechen/openvla-oft.git
