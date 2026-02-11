@@ -17,7 +17,7 @@ lerobot_dataset_repo_id: ${hydra:runtime.choices.envgen}/${now:%Y-%m-%d_%H%M%S}
 log_every: ${oc.mul:5, ${envgen.emitter.batch_size}, ${eval.task_eval.num_trials_per_sol}} # Log every 5 search iterations
 seed: 42
 
-single_process: ${oc.equals:${oc.len:${oc.env_csv:VLA_SERVER_URLS}}, 1} # If True, there will be no dask parallelization and all evals will be done sequentially
+single_process: ${oc.equals:${oc.len:${oc.env_csv:VLA_SERVER_URIs}}, 1} # If True, there will be no dask parallelization and all evals will be done sequentially
 
 # for resuming an experiment
 reload_from_dir: null

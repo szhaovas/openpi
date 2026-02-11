@@ -1,19 +1,24 @@
 import pickle as pkl
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
-import tqdm
 from dash import Dash, Input, Output, dcc, html, no_update
+from dask.distributed import Client, LocalCluster
 from ribs.archives import ArchiveBase, GridArchive
 from ribs.visualize import grid_archive_heatmap
+from tqdm import tqdm
 
-from src.env_search import _extract_scheduler_nevals, save_heatmap
+from src.dataset_utils import TempDataset
+from src.env_search import (
+    extract_scheduler_nevals,
+    safe_pickle_dump,
+    save_heatmap,
+)
 from src.libero_spatial_eval import LiberoSpatialEval
 from src.measures import PCAMeasure
-from src.myribs.archives import LoggingArchive
 
 
 def show_interactive_archive(archive: GridArchive, num_trials_per_sol: int = 4):
@@ -133,14 +138,33 @@ def host_interactive_archive(
 
 def success_rates_on_envs(
     env_archive: ArchiveBase,
-    vla_server_urls: List[str],
+    vla_server_uris: List[str],
+    logdir: str = "rollouts",
 ):
+    logpath = Path(logdir)
+    assert not logpath.is_dir()
+
+    if len(vla_server_uris) > 1:
+        cluster = LocalCluster(
+            processes=True,
+            n_workers=len(vla_server_uris),
+            threads_per_worker=1,
+        )
+        client = Client(cluster)
+    else:
+        client = None
+
     evaluators = [
         LiberoSpatialEval(
             task_id=tid,
             objective_func="success_rate",
-            num_trials_per_sol=len(vla_server_urls),
-            vla_server_urls=vla_server_urls,
+            num_trials_per_sol=len(vla_server_uris),
+            vla_server_uris=vla_server_uris,
+            dask_client=client,
+            camera_heights=256,
+            camera_widths=256,
+            replan_steps=1,  # When no action chunking
+            repair_config={"time_limit": 1500, "seed": 42},
         )
         for tid in range(10)
     ]
@@ -153,23 +177,34 @@ def success_rates_on_envs(
     )
 
     env_counters = [0] * 10
-    for cell in tqdm.tqdm(env_archive):
-        _, objective, _, _ = evaluators[cell["task_id"]].evaluate(
+    for cell in tqdm(env_archive):
+        task_id = cell["task_id"]
+        env_id = env_counters[task_id]
+
+        rollout_dataset = TempDataset(
+            dataset_dir=logpath / f"task{task_id}_env{env_id}"
+        )
+
+        _, objective, _, trajectories = evaluators[task_id].evaluate_single(
             solution=cell["solution"]
         )
 
         success_rates_archive.add_single(
             solution=cell["solution"],
             objective=objective,
-            measures=[cell["task_id"], env_counters[cell["task_id"]]],
+            measures=[task_id, env_id],
         )
 
-        env_counters[cell["task_id"]] += 1
+        env_counters[task_id] += 1
 
-    with open("success_rates.pkl", "wb") as f:
-        pkl.dump(success_rates_archive, f)
+        tqdm.write(f"task{task_id}_env{env_id} success rate: {objective}")
 
-    save_heatmap(success_rates_archive, "success_rates.png")
+        for traj in trajectories:
+            rollout_dataset.write_episode(trajectory=traj)
+
+        safe_pickle_dump(success_rates_archive, logpath / "success_rates.pkl")
+
+        save_heatmap(success_rates_archive, str(logpath / "success_rates.png"))
 
 
 def redraw_heatmap(
@@ -178,7 +213,7 @@ def redraw_heatmap(
 ):
     measure_model = PCAMeasure(ckpt_path=encoder_ckpt_path)
 
-    all_nevals = _extract_scheduler_nevals(experiment_logdir)
+    all_nevals = extract_scheduler_nevals(experiment_logdir)
 
     all_qd_scores = []
     all_coverages = []
@@ -218,50 +253,42 @@ def redraw_heatmap(
     print(all_coverages)
 
 
+def tally_traj_by_task(
+    traj_dataset: TempDataset, max_traj_len: Optional[int] = None
+) -> Dict[str, List]:
+    traj_id_by_task = {
+        "pick the akita black bowl from table center and place it on the plate": [],
+        "pick the akita black bowl next to the plate and place it on the plate": [],
+        "pick the akita black bowl on the ramekin and place it on the plate": [],
+        "pick the akita black bowl next to the ramekin and place it on the plate": [],
+        "pick the akita black bowl on the cookies box and place it on the plate": [],
+        "pick the akita black bowl on the stove and place it on the plate": [],
+        "pick the akita black bowl next to the cookies box and place it on the plate": [],
+        "pick the akita black bowl between the plate and the ramekin and place it on the plate": [],
+        "pick the akita black bowl in the top layer of the wooden cabinet and place it on the plate": [],
+        "pick the akita black bowl on the wooden cabinet and place it on the plate": [],
+    }
+    for traj_id, trajectory in enumerate(tqdm(traj_dataset)):
+        assert trajectory.prompt is not None
+        if max_traj_len is None or len(trajectory.state) < max_traj_len:
+            traj_id_by_task[trajectory.prompt].append(traj_id)
+
+    return traj_id_by_task
+
+
 if __name__ == "__main__":
-    # with open(
-    #     # Enter the scheduler checkpoint you want to visualize here
-    #     file="scheduler_00000500.pkl",
-    #     mode="rb",
-    # ) as f:
-    #     archive = pkl.load(f).archive
-    #     # show_interactive_archive(archive, num_trials_per_sol=4)
-    #     host_interactive_archive(archive, num_trials_per_sol=4)
-    #     # success_rates_on_envs(archive, num_trials_per_sol=4)
-
-    # from sklearn.metrics.pairwise import rbf_kernel
-    # from vendi_score import vendi
-
-    # all_dists = []
-    # all_nevals = []
-    # for filename, nevals in _extract_scheduler_nevals(
-    #     "domain_randomization/"
-    # ).items():
-    #     print(filename)
-    #     all_nevals.append(nevals)
-    #     with open(file=filename, mode="rb") as f:
-    #         archive_data = pkl.load(f).result_archive.data(
-    #             ["objective", "embedding"]
-    #         )
-    #         rbf_K = rbf_kernel(X=archive_data["embedding"], gamma=0.002)
-    #         emb_vendi_rbf = vendi.score_K(rbf_K, normalize=True)
-    #         qvendi = np.mean(archive_data["objective"]) * emb_vendi_rbf
-    #         all_dists.append(qvendi)
-    #         print(qvendi)
-    # all_dists = np.array(all_dists)
-    # all_dists = all_dists[np.argsort(all_nevals)]
-    # print(all_dists)
-
-    # from src.dataset_utils import TempDataset
-
-    # temp_succ_dataset = TempDataset(
-    #     dataset_dir=Path("domain_randomization/succ_dataset/")
-    # )
-    # temp_succ_dataset.convert_to_lerobot(
-    #     "domain_randomization", max_traj_len=100
-    # )
-
-    redraw_heatmap(
-        "domain_randomization/",
-        "outputs/cma_mae/2026-01-31_204605/measure_ckpt.pt",
-    )
+    with open(
+        file="outputs/domain_randomization/2026-02-07_003429/embeddings/test_scenarios.pkl",
+        mode="rb",
+    ) as f:
+        env_archive = pkl.load(f)
+        success_rates_on_envs(
+            env_archive=env_archive,
+            vla_server_uris=[
+                "0.0.0.0:8001",
+                "0.0.0.0:8002",
+                "0.0.0.0:8003",
+                "0.0.0.0:8004",
+            ],
+            logdir="vlarl_libero",
+        )

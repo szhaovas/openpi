@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 
 EXP_NAME=$1 # cma_mae or domain_randomization
-VLA_SERVER_URLS=(
-  "0.0.0.0:8003" # space after each url string
-  "0.0.0.0:8004" # this script assumes ip to be local host
-  "0.0.0.0:8005" 
-) # By default, the number of urls sets cfg.eval.task_eval.num_trials_per_sol
-GPU_IDs=(2 3 4) # should have the same length as VLA_SERVER_URLS
+VLA_TYPE=$2 # OpenPi or OpenVLA
+VLA_SERVER_URIs=(
+  "0.0.0.0:8005" # space after each uri string
+  # "0.0.0.0:8006" # this script assumes ip to be local host
+  # "0.0.0.0:8007" 
+  # "0.0.0.0:8008" 
+) # By default, the number of uris sets cfg.eval.task_eval.num_trials_per_sol
+GPU_IDs=(3) # should have the same length as VLA_SERVER_URIs
 
 # Check if session exists
 if tmux has-session -t "$EXP_NAME" 2>/dev/null; then
@@ -20,11 +22,11 @@ tmux new-session -d -s "$EXP_NAME"
 
 # Spawns a pane for running QD loop
 tmux send-keys -t $EXP_NAME "
-export VLA_SERVER_URLS="$(IFS=,; echo "${VLA_SERVER_URLS[*]}")"
+export VLA_SERVER_URIs="$(IFS=,; echo "${VLA_SERVER_URIs[*]}")"
 uv run -m src.env_search envgen=$EXP_NAME
 " C-m
 
-num_servers=${#VLA_SERVER_URLS[@]}
+num_servers=${#VLA_SERVER_URIs[@]}
 # Spawns num_servers panes each calling serve_policy.py with its own GPU
 for server_id in $(seq 0 $((num_servers-1)))
 do
@@ -34,10 +36,25 @@ do
   else
     tmux split-window -v
   fi
-  tmux send-keys -t "$EXP_NAME:0.$((server_id+1))" "
-    cd openpi
-    CUDA_VISIBLE_DEVICES="${GPU_IDs[$server_id]}" uv run scripts/serve_policy.py --env LIBERO --port "${VLA_SERVER_URLS[$server_id]##*:}"
-  " C-m
+  case "$VLA_TYPE" in
+      OpenPi)
+          tmux send-keys -t "$EXP_NAME:0.$((server_id+1))" "
+            cd openpi
+            CUDA_VISIBLE_DEVICES="${GPU_IDs[$server_id]}" uv run scripts/serve_policy.py --env LIBERO --port "${VLA_SERVER_URIs[$server_id]##*:}"
+          " C-m
+          ;;
+      OpenVLA)
+          tmux send-keys -t "$EXP_NAME:0.$((server_id+1))" "
+            cd openvla
+            CUDA_VISIBLE_DEVICES="${GPU_IDs[$server_id]}" uv run -m vla_scripts.ws_vla_server --port "${VLA_SERVER_URIs[$server_id]##*:}"
+          " C-m
+          ;;
+      *)
+          echo "Unknown VLA: $VLA_TYPE" >&2
+          tmux kill-session -t "$EXP_NAME"
+          exit 1
+          ;;
+  esac
 done
 
 # Make the server panes have equal height

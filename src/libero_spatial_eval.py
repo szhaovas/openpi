@@ -9,10 +9,10 @@ from typing import Dict, List, Optional, Tuple
 import imageio
 import numpy as np
 from dask.distributed import Client
+from libero.libero.envs import OffScreenRenderEnv
 from numpy.typing import NDArray
 
 from libero.libero import benchmark
-from libero.libero.envs import OffScreenRenderEnv
 from src.dataset_utils import Trajectory
 from src.measures import MeasureModel
 from src.vla_client.websocket_client_policy import WebsocketClientPolicy
@@ -105,7 +105,7 @@ class LiberoSpatialEval:
         max_steps: int = 220,
         num_steps_wait: int = 10,
         replan_steps: int = 5,
-        vla_server_urls: List[str] = ["0.0.0.0:8000"],
+        vla_server_uris: List[str] = ["0.0.0.0:8000"],
         seed: int = 42,
         dask_client: Optional[Client] = None,
         repair_config: Optional[Dict] = None,
@@ -136,17 +136,17 @@ class LiberoSpatialEval:
         self.max_steps = max_steps
         self.num_steps_wait = num_steps_wait
         self.replan_steps = replan_steps
-        self.vla_server_urls = vla_server_urls
+        self.vla_server_uris = vla_server_uris
         self._seed = seed
 
         self._dask_client = dask_client
         if self._dask_client is not None:
             nworkers = len(self._dask_client.scheduler_info()["workers"])
-            if len(self.vla_server_urls) != nworkers:
+            if len(self.vla_server_uris) != nworkers:
                 raise ValueError(
-                    "Expected number of VLA server urls to equal number of"
+                    "Expected number of VLA server uris to equal number of"
                     f"dask client workers {nworkers}; actually got "
-                    f"{len(self.vla_server_urls)} VLA server urls"
+                    f"{len(self.vla_server_uris)} VLA server uris"
                 )
 
             if self.num_trials_per_sol > nworkers:
@@ -218,7 +218,7 @@ class LiberoSpatialEval:
                 self._dask_client.submit(
                     rollout,
                     env_params=repaired_solution,
-                    vla_server_url=self.vla_server_urls[trial_id],
+                    vla_server_uri=self.vla_server_uris[trial_id],
                     eval_stub=self._eval_stub,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
@@ -237,7 +237,7 @@ class LiberoSpatialEval:
             for trial_id in range(self.num_trials_per_sol):
                 succ, traj = rollout(
                     env_params=repaired_solution,
-                    vla_server_url=self.vla_server_urls[0],
+                    vla_server_uri=self.vla_server_uris[0],
                     eval_stub=self._eval_stub,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
@@ -322,7 +322,7 @@ class LiberoSpatialEval:
     # TODO: clean this up
     def get_single_trajectories(
         self, solutions: np.ndarray
-    ) -> List[Trajectory]:
+    ) -> Tuple[np.ndarray, List[Trajectory]]:
         """Useful for collecting embeddings for measure model training. We define
         this seperately from :meth:`evaluate` because each solution only gets
         evaluated once when collecting embeddings and it no longer makes sense
@@ -332,28 +332,50 @@ class LiberoSpatialEval:
         assert self.num_trials_per_sol == 1
 
         if self._dask_client is not None:
-            futures = [
-                self._dask_client.submit(
-                    rollout,
-                    env_params=sol,
-                    vla_server_url=self.vla_server_urls[sol_id],
-                    eval_stub=self._eval_stub,
-                    max_steps=self.max_steps,
-                    num_steps_wait=self.num_steps_wait,
-                    replan_steps=self.replan_steps,
-                    seed=self._seed,
-                    pure=False,
+            repaired, futures = [], []
+            for sol_id, sol in enumerate(solutions):
+                try:
+                    env = self._eval_stub(env_params=sol)
+                    env.reset()
+                except Exception as e:
+                    # Allow repair failure since we are not actually rolling it out
+                    logger.warning(e)
+
+                rep = env.env.env_params.copy()
+                repaired.append(rep)
+
+                futures.append(
+                    self._dask_client.submit(
+                        rollout,
+                        env_params=rep,
+                        vla_server_uri=self.vla_server_uris[sol_id],
+                        eval_stub=self._eval_stub,
+                        max_steps=self.max_steps,
+                        num_steps_wait=self.num_steps_wait,
+                        replan_steps=self.replan_steps,
+                        seed=self._seed,
+                        pure=False,
+                    )
                 )
-                for sol_id, sol in enumerate(solutions)
-            ]
+
             results = self._dask_client.gather(futures)
             trajectories = [traj for _, traj in results]
         else:
-            trajectories = []
+            repaired, trajectories = [], []
             for _, sol in enumerate(solutions):
+                try:
+                    env = self._eval_stub(env_params=sol)
+                    env.reset()
+                except Exception as e:
+                    # Allow repair failure since we are not actually rolling it out
+                    logger.warning(e)
+
+                rep = env.env.env_params.copy()
+                repaired.append(rep)
+
                 _, traj = rollout(
-                    env_params=sol,
-                    vla_server_url=self.vla_server_urls[0],
+                    env_params=rep,
+                    vla_server_uri=self.vla_server_uris[0],
                     eval_stub=self._eval_stub,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
@@ -362,12 +384,12 @@ class LiberoSpatialEval:
                 )
                 trajectories.append(traj)
 
-        return trajectories
+        return np.array(repaired), trajectories
 
 
 def rollout(
     env_params: np.ndarray,
-    vla_server_url: str,
+    vla_server_uri: str,
     eval_stub: partial,
     max_steps: int,
     num_steps_wait: int,
@@ -382,7 +404,7 @@ def rollout(
         env_params (np.ndarray): Array of shape (solution_dim,) containing a single
             solution to be evaluated.
         eval_stub (partial): ``eval_stub(env_params)`` returns a Libero env.
-        vla_server_url (str): On which host ip and port should this rollout
+        vla_server_uri (str): On which host ip and port should this rollout
             contact the VLA server. e.g. 0.0.0.0:8000
         max_steps (int): The maximum number of rollout steps before the task is
             failed.
@@ -417,7 +439,7 @@ def rollout(
         # TODO: How to handle solutions that fail to evaluate
         return False, Trajectory(success=False)
 
-    ip, port = vla_server_url.split(":")
+    ip, port = vla_server_uri.split(":")
     vla_policy = WebsocketClientPolicy(ip, int(port))
 
     if video_logdir is not None:
@@ -457,11 +479,9 @@ def rollout(
             }
 
             inference_obj = vla_policy.infer(element)
-            trajectory.embedding.append(
-                np.mean(inference_obj["pre_logits"], axis=0)
-            )
+            trajectory.embedding.append(inference_obj["pre_logits"])
 
-            action_chunk = inference_obj["actions"]
+            action_chunk = np.atleast_2d(inference_obj["actions"])
             if len(action_chunk) < replan_steps:
                 logger.warning(
                     f"We want to replan every {replan_steps} steps, but policy only predicts {len(action_chunk)} steps."

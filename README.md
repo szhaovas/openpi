@@ -24,12 +24,20 @@ python CPLEX_Studio201/python/setup.py install
 
 ## Run QD search
 ```bash
-./run_env_search.sh cma_mae # cma_mae or domain_randomization
+./run_env_search.sh <envgen> <vla>
 ```
+- \<envgen>: The environment generation algorithm. Currently can be either `domain_randomization` or `cma_mae`.
+- \<vla>: The vla with which to collect rollouts. Currently can be either `openpi` or `openvla`
+
 Some additional fields at the top of `run_env_search.sh` that can be changed:
-- `NUM_SERVERS`: The number of GPUs you wish to use to host VLA servers. We parallelize rollouts, and the number of rollouts on each generated environment is set to `NUM_SERVERS` by default. If you only have access to a single GPU, set `NUM_SERVERS=1` and modify `<config.eval.task_eval.num_trials_per_sol>` to the desired number of rollouts (in this case, rollouts will be run sequentially).
-- `SERVER_PORT_START`: Defines local ports on which VLAs will communicate with the pipeline. Each VLA server is assigned its own port, so `SERVER_PORT_START, SERVER_PORT_START+1,...,SERVER_PORT_START+NUM_SERVERS-1` will be assigned. You shouldn't need to change this unless other processes are using the default ports.
-- `GPU_ID_START`: Defines the CUDA device IDs on which VLAs will be hosted. `GPU_ID_START,GPU_ID_START+1,...GPU_ID_START+NUM_SERVERS-1` will be assigned. You shouldn't need to change this unless other processes are using GPU0~.
+- `VLA_SERVER_URIs`: The IPs and ports on which to host VLA servers. The number 
+ of rollouts is set to the number of URIs by default since we parallelize by 
+ rollouts. If you only have access to a single GPU, set this as a single URI 
+ (e.g. `0.0.0.0:8000`) and modify `<config.eval.task_eval.num_trials_per_sol>` 
+ to the desired number of rollouts (in this case, rollouts will be run 
+ sequentially).
+- `GPU_IDs`: Defines the CUDA device IDs on which to host VLA servers. This 
+should have the same length as `VLA_SERVER_URIs`.
 
 QD search will save the finetuning dataset at `~/.cache/huggingface/lerobot/<config.envgen>`.
 
@@ -54,4 +62,6 @@ Terminal 2:
 cd openpi
 uv run scripts/serve_policy.py --env LIBERO policy:checkpoint --policy.config pi0_fast_libero_low_mem_finetune --policy.dir <your_finetuned_checkpoint>
 ```
+<!-- CUDA_VISIBLE_DEVICES=1 uv run scripts/serve_policy.py --env LIBERO --port 8001 policy:checkpoint --policy.config pi0_fast_libero_cma_mae --policy.dir checkpoints/pi0_fast_libero_envgen/cma_mae/29999 -->
+
 This will display an interactive archive heatmap at `localhost:8050`. You can view it in the browser and click on a cell to save rollouts of that cell's solution to `interactive_vids`. If you are on ssh, you can also configure port forwarding to view and interact with heatmap on your own computer.

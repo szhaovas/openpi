@@ -4,15 +4,15 @@ import logging
 import os
 import pickle as pkl
 import re
+import shutil
 from functools import reduce
 from operator import add, mul
 from pathlib import Path
-from typing import Dict, Union
+from typing import Any, Dict, Union
 
 import hydra
 import matplotlib.pyplot as plt
 import numpy as np
-import tqdm
 from dask.distributed import Client, LocalCluster
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
@@ -20,6 +20,7 @@ from ribs.archives import CVTArchive, GridArchive
 from ribs.visualize import cvt_archive_heatmap, grid_archive_heatmap
 from sklearn.metrics import pairwise_distances
 from sklearn.metrics.pairwise import rbf_kernel
+from tqdm import tqdm
 from vendi_score import vendi
 
 from src.dataset_utils import TempDataset
@@ -28,7 +29,7 @@ from src.libero_spatial_eval import get_default_env_params
 logger = logging.getLogger(__name__)
 
 
-def _extract_scheduler_nevals(experiment_logdir: str) -> Dict[str, int]:
+def extract_scheduler_nevals(experiment_logdir: str) -> Dict[str, int]:
     """Extracts the numbers of evaluations at all scheduler checkpoints within
     an experiment log. Returns a dictionary matching checkpoint filenames with
     extracted numbers of evaluations.
@@ -51,7 +52,28 @@ def _extract_scheduler_nevals(experiment_logdir: str) -> Dict[str, int]:
     return result
 
 
-def save_heatmap(archive: Union[GridArchive, CVTArchive], heatmap_path: str):
+def safe_pickle_dump(obj: Any, save_path: Path):
+    """Checks free disk space before picking an object. This prevents using up
+    all remaining disk space with a partially-written and unusable object.
+    """
+    obj_size = len(pkl.dumps(obj, protocol=pkl.HIGHEST_PROTOCOL))
+    free_space = shutil.disk_usage(save_path.parent).free
+
+    if obj_size > free_space:
+        raise OSError(
+            f"Not enough disk space: need {obj_size} bytes, have {free_space}"
+        )
+
+    with open(save_path, "wb") as f:
+        pkl.dump(obj, f)
+
+
+def save_heatmap(
+    archive: Union[GridArchive, CVTArchive],
+    heatmap_path: str,
+    vmin: int = 0,
+    vmax: int = 1,
+):
     """Saves a heatmap of the archive to the given path.
 
     Args:
@@ -60,9 +82,9 @@ def save_heatmap(archive: Union[GridArchive, CVTArchive], heatmap_path: str):
     """
     plt.figure(figsize=(8, 6))
     if isinstance(archive, GridArchive):
-        grid_archive_heatmap(archive, vmin=0, vmax=1, cmap="viridis")
+        grid_archive_heatmap(archive, vmin=vmin, vmax=vmax, cmap="viridis")
     elif isinstance(archive, CVTArchive):
-        cvt_archive_heatmap(archive, vmin=0, vmax=1, cmap="viridis")
+        cvt_archive_heatmap(archive, vmin=vmin, vmax=vmax, cmap="viridis")
     else:
         raise ValueError
     plt.tight_layout()
@@ -107,6 +129,12 @@ def collect_embeddings(colemb_cfg: DictConfig):
     archive = instantiate(
         colemb_cfg.envgen.logging_archive,
         solution_dim=len(get_default_env_params()),
+        extra_fields={
+            "task_id": (
+                (),
+                np.int32,
+            ),  # store task_id for each env for later eval
+        },
     )
 
     emitters = [
@@ -140,20 +168,25 @@ def collect_embeddings(colemb_cfg: DictConfig):
         for tid in range(10)
     ]
 
-    with tqdm.tqdm(
-        range(1, colemb_cfg.collect_embedding_num_evals + 1)
-    ) as pbar:
+    with tqdm(range(colemb_cfg.collect_embedding_num_evals)) as pbar:
         while pbar.n < pbar.total:
             solutions = scheduler.ask()
 
+            all_task_id = []
             for eid, em in enumerate(scheduler.emitters):
                 sol_start = eid * colemb_cfg.envgen.emitter.batch_size
                 sol_end = sol_start + colemb_cfg.envgen.emitter.batch_size
-                trajectories = evaluators[em.task_id].get_single_trajectories(
+                repaired, trajectories = evaluators[
+                    em.task_id
+                ].get_single_trajectories(
                     solutions=solutions[sol_start:sol_end]
                 )
                 pbar.update(len(trajectories))
                 pbar.refresh()
+
+                all_task_id += [
+                    em.task_id
+                ] * colemb_cfg.envgen.emitter.batch_size
 
                 for traj in trajectories:
                     embedding_dataset.write_episode(trajectory=traj)
@@ -162,12 +195,12 @@ def collect_embeddings(colemb_cfg: DictConfig):
             scheduler.tell(
                 np.repeat(1e-6, solutions.shape[0]),
                 np.random.rand(solutions.shape[0], 1),
-                solution=solutions,
+                solution=repaired,
                 injected=np.full(solutions.shape[0], False),
+                task_id=all_task_id,
             )
 
-    with open(embedding_logdir / "test_scenarios.pkl", "wb") as archive_file:
-        pkl.dump(scheduler.archive, archive_file)
+    safe_pickle_dump(scheduler.archive, embedding_logdir / "test_scenarios.pkl")
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="main")
@@ -270,7 +303,7 @@ def main(cfg: DictConfig):
         logdir = Path(cfg.reload_from_dir)
         summary_filename = Path(cfg.reload_from_dir) / "summary.csv"
         starting_nevals = max(
-            _extract_scheduler_nevals(cfg.reload_from_dir).values()
+            extract_scheduler_nevals(cfg.reload_from_dir).values()
         )
 
         with open(
@@ -310,7 +343,7 @@ def main(cfg: DictConfig):
     ]
 
     nevals_since_last_log = 0
-    with tqdm.tqdm(
+    with tqdm(
         range(starting_nevals, cfg.env_search_num_evals),
         initial=starting_nevals,
         total=cfg.env_search_num_evals,
@@ -395,6 +428,7 @@ def main(cfg: DictConfig):
                 ["objective", "embedding"]
             )
             num_valid_env = np.sum(archive_data["objective"] > 0.01)
+            # TODO: len(scheduler.result_archive)
             avg_emb_dist = np.mean(
                 pairwise_distances(
                     X=archive_data["embedding"], metric="euclidean"
@@ -422,10 +456,10 @@ def main(cfg: DictConfig):
             final_itr = pbar.n == pbar.total
             if nevals_since_last_log > cfg.log_every or final_itr:
                 nevals_since_last_log = 0
-                with open(
-                    logdir / f"scheduler_{pbar.n:08d}.pkl", "wb"
-                ) as scheduler_file:
-                    pkl.dump(scheduler, scheduler_file)
+
+                safe_pickle_dump(
+                    scheduler, logdir / f"scheduler_{pbar.n:08d}.pkl"
+                )
 
                 with open(summary_filename, "a") as summary_file:
                     writer = csv.writer(summary_file)
