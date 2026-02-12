@@ -2,7 +2,7 @@ task_ids: [0,1,2,3,4,5,6,7,8,9]
 
 task_eval:
   _target_: src.libero_spatial_eval.LiberoSpatialEval
-  objective_func: entropy
+  objective_func: adversarial
   measure_func: spread_similarity
   num_trials_per_sol: ${oc.len:${.vla_server_uris}}
   max_steps: 220

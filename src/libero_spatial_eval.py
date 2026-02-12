@@ -1,12 +1,9 @@
 import collections
-import datetime
 import logging
 import math
 from functools import partial
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import imageio
 import numpy as np
 from dask.distributed import Client
 from libero.libero.envs import OffScreenRenderEnv
@@ -99,7 +96,7 @@ class LiberoSpatialEval:
     def __init__(
         self,
         task_id: int,
-        objective_func: Optional[str] = "entropy",
+        objective_func: Optional[str] = "success_rate",
         measure_func: Optional[str] = None,
         num_trials_per_sol: int = 1,
         max_steps: int = 220,
@@ -114,9 +111,9 @@ class LiberoSpatialEval:
     ):
         self.task_id = task_id
 
-        if objective_func not in ["entropy", "success_rate"]:
+        if objective_func not in ["entropy", "success_rate", "adversarial"]:
             raise ValueError(
-                f"Unknown objective_func {objective_func} (must be one of {['entropy', 'success_rate']})"
+                f"Unknown objective_func {objective_func} (must be one of {['entropy', 'success_rate', 'adversarial']})"
             )
         self.objective_func = objective_func
 
@@ -185,6 +182,9 @@ class LiberoSpatialEval:
                 across all trials.
                 - If :attr:`objective_func` is ``entropy``, this is entropy of
                 the aforementioned success rate.
+                - If :attr:`objective_func` is ``adversarial``, this is either
+                ``1-success_rate`` if success rate is greater than 0, or 0 if
+                success rate is 0.
             measures (np.ndarray): Measure values corresponding to this
                 solution and the measure function defined in
                 :attr:`measure_func`. Returns a random number if
@@ -201,7 +201,7 @@ class LiberoSpatialEval:
             # TODO: How to represent a solution that cannot be repaired
             return (
                 solution.copy(),
-                1e-6,
+                0,
                 np.random.rand(1),
                 [
                     Trajectory(success=False)
@@ -257,6 +257,8 @@ class LiberoSpatialEval:
                 1 - success_rate
             ) * math.log2(1 - success_rate)
             objective = entropy
+        elif self.objective_func == "adversarial":
+            objective = 0 if success_rate == 0 else 1 - success_rate
         else:
             raise RuntimeError
 
@@ -285,7 +287,7 @@ class LiberoSpatialEval:
         Returns:
             repaired_solution (np.ndarray): Repaired solution array of shape
                 (batch_size, solution_dim).
-            objective (np.ndarray): Entropy array of shape (batch_size,).
+            objective (np.ndarray): Objective array of shape (batch_size,).
             measures (np.ndarray): Measures array of shape (batch_size, 2).
             trajectories (List[List[Trajectory]]): Trajectories array of shape
                 (batch_size, ntrials).
@@ -395,7 +397,6 @@ def rollout(
     num_steps_wait: int,
     replan_steps: int,
     seed: int,
-    video_logdir: Optional[str] = None,
 ) -> Tuple[bool, Trajectory]:
     """Rolls out one set of ``env_params`` for one trial and returns success
     indicator and trajectory.
@@ -412,8 +413,6 @@ def rollout(
             starts doing stuff. This allows the env to settle.
         replan_steps (int): How often to query VLA for replan.
         seed (int): Seed.
-        video_logdir (str): Folder for saving rollout videos. If None no video
-            is saved.
 
     Returns:
         success (bool): Whether the VLA successfully completed the task during
@@ -441,14 +440,6 @@ def rollout(
 
     ip, port = vla_server_uri.split(":")
     vla_policy = WebsocketClientPolicy(ip, int(port))
-
-    if video_logdir is not None:
-        # ID each sol with datetime to prevent overwriting
-        sol_logdir = (
-            Path(video_logdir)
-            / f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        )
-        sol_logdir.mkdir(parents=True)
 
     action_plan = collections.deque()
     trajectory = Trajectory(prompt=env.language_instruction)
@@ -501,14 +492,6 @@ def rollout(
         if done:
             trajectory.success = True
             break
-
-    if video_logdir is not None:
-        imageio.mimwrite(
-            sol_logdir
-            / f"trial{trial_id}_{'success' if trajectory.success else 'fail'}.mp4",
-            [np.asarray(x) for x in trajectory.image],
-            fps=10,
-        )
 
     vla_policy._ws.close()
 

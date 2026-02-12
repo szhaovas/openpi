@@ -21,7 +21,36 @@ from src.libero_spatial_eval import LiberoSpatialEval
 from src.measures import PCAMeasure
 
 
-def show_interactive_archive(archive: GridArchive, num_trials_per_sol: int = 4):
+def show_interactive_archive(
+    archive: GridArchive,
+    vla_server_uris: List[str],
+    logdir: str = "rollouts",
+):
+    if len(vla_server_uris) > 1:
+        cluster = LocalCluster(
+            processes=True,
+            n_workers=len(vla_server_uris),
+            threads_per_worker=1,
+        )
+        client = Client(cluster)
+    else:
+        client = None
+
+    evaluators = [
+        LiberoSpatialEval(
+            task_id=tid,
+            objective_func="success_rate",
+            num_trials_per_sol=len(vla_server_uris),
+            vla_server_uris=vla_server_uris,
+            dask_client=client,
+            camera_heights=256,
+            camera_widths=256,
+            # replan_steps=1,  # Uncomment when no action chunking
+            repair_config={"time_limit": 1500, "seed": 42},
+        )
+        for tid in range(10)
+    ]
+
     fig = plt.figure(figsize=(8, 6))
     grid_archive_heatmap(archive, vmin=0, vmax=1, cmap="viridis")
     plt.tight_layout()
@@ -33,13 +62,14 @@ def show_interactive_archive(archive: GridArchive, num_trials_per_sol: int = 4):
             print(
                 f"Recorded objective: {data['objective']}; Recorded measures: {data['measures']}"
             )
-            evaluator = LiberoSpatialEval(
-                task_id=data["task_id"], num_trials_per_sol=num_trials_per_sol
-            )
-            _, obj, meas, _ = evaluator.evaluate_single(
-                solution=data["solution"]
-            )
-            print(f"Evaluated objective: {obj}; Evaluated measures: {meas}")
+            _, objective, _, trajectories = evaluators[
+                data["task_id"]
+            ].evaluate_single(solution=data["solution"])
+            print(f"Evaluated success rate: {objective}")
+
+            for traj in trajectories:
+                rollout_dataset = TempDataset(dataset_dir=Path(logdir))
+                rollout_dataset.write_episode(trajectory=traj)
         else:
             print("Archive cell not occupied")
 
@@ -77,7 +107,10 @@ def _plotly_grid_archive_heatmap(
 
 
 def host_interactive_archive(
-    archive: GridArchive, num_trials_per_sol: int = 4, port: int = 8050
+    archive: GridArchive,
+    vla_server_uris: List[str],
+    port: int = 8050,
+    logdir: str = "rollouts",
 ):
     """Similar to :func:`show_interactive_archive`, except it hosts the
     interactive plot at localhost:<port> to allow generating the plot on a
@@ -90,6 +123,31 @@ def host_interactive_archive(
         archive (GridArchive): Archive to be displayed.
         port (int): The port on which to display the plot.
     """
+    if len(vla_server_uris) > 1:
+        cluster = LocalCluster(
+            processes=True,
+            n_workers=len(vla_server_uris),
+            threads_per_worker=1,
+        )
+        client = Client(cluster)
+    else:
+        client = None
+
+    evaluators = [
+        LiberoSpatialEval(
+            task_id=tid,
+            objective_func="success_rate",
+            num_trials_per_sol=len(vla_server_uris),
+            vla_server_uris=vla_server_uris,
+            dask_client=client,
+            camera_heights=256,
+            camera_widths=256,
+            # replan_steps=1,  # Uncomment when no action chunking
+            repair_config={"time_limit": 1500, "seed": 42},
+        )
+        for tid in range(10)
+    ]
+
     app = Dash(__name__)
 
     app.layout = html.Div(
@@ -121,13 +179,14 @@ def host_interactive_archive(
             print(
                 f"Recorded objective: {data['objective']}; Recorded measures: {data['measures']}"
             )
-            evaluator = LiberoSpatialEval(
-                task_id=data["task_id"], num_trials_per_sol=num_trials_per_sol
-            )
-            _, obj, meas, _ = evaluator.evaluate_single(
-                solution=data["solution"]
-            )
-            print(f"Evaluated objective: {obj}; Evaluated measures: {meas}")
+            _, objective, _, trajectories = evaluators[
+                data["task_id"]
+            ].evaluate_single(solution=data["solution"])
+            print(f"Evaluated success rate: {objective}")
+
+            for traj in trajectories:
+                rollout_dataset = TempDataset(dataset_dir=Path(logdir))
+                rollout_dataset.write_episode(trajectory=traj)
         else:
             print("Archive cell not occupied")
 
@@ -139,7 +198,7 @@ def host_interactive_archive(
 def success_rates_on_envs(
     env_archive: ArchiveBase,
     vla_server_uris: List[str],
-    logdir: str = "rollouts",
+    logdir: str = "success_rates",
 ):
     logpath = Path(logdir)
     assert not logpath.is_dir()
@@ -163,7 +222,7 @@ def success_rates_on_envs(
             dask_client=client,
             camera_heights=256,
             camera_widths=256,
-            replan_steps=1,  # When no action chunking
+            # replan_steps=1,  # Uncomment when no action chunking
             repair_config={"time_limit": 1500, "seed": 42},
         )
         for tid in range(10)
@@ -268,27 +327,43 @@ def tally_traj_by_task(
         "pick the akita black bowl in the top layer of the wooden cabinet and place it on the plate": [],
         "pick the akita black bowl on the wooden cabinet and place it on the plate": [],
     }
-    for traj_id, trajectory in enumerate(tqdm(traj_dataset)):
-        assert trajectory.prompt is not None
-        if max_traj_len is None or len(trajectory.state) < max_traj_len:
-            traj_id_by_task[trajectory.prompt].append(traj_id)
+    for traj_id, traj in enumerate(tqdm(traj_dataset)):
+        assert traj.prompt is not None
+        if max_traj_len is None or len(traj.state) < max_traj_len:
+            traj_id_by_task[traj.prompt].append(traj_id)
 
     return traj_id_by_task
 
 
 if __name__ == "__main__":
+    # with open(
+    #     file="outputs/domain_randomization/2026-02-07_003429/embeddings/test_scenarios.pkl",
+    #     mode="rb",
+    # ) as f:
+    #     env_archive = pkl.load(f)
+    #     success_rates_on_envs(
+    #         env_archive=env_archive,
+    #         vla_server_uris=[
+    #             "0.0.0.0:8001",
+    #             "0.0.0.0:8002",
+    #             "0.0.0.0:8003",
+    #             "0.0.0.0:8004",
+    #         ],
+    #         logdir="vlarl_libero",
+    #     )
+
     with open(
-        file="outputs/domain_randomization/2026-02-07_003429/embeddings/test_scenarios.pkl",
+        file="results/domain_randomization/scheduler_00002304.pkl",
         mode="rb",
     ) as f:
-        env_archive = pkl.load(f)
-        success_rates_on_envs(
-            env_archive=env_archive,
+        archive = pkl.load(f).archive
+        host_interactive_archive(
+            archive,
             vla_server_uris=[
                 "0.0.0.0:8001",
                 "0.0.0.0:8002",
                 "0.0.0.0:8003",
                 "0.0.0.0:8004",
             ],
-            logdir="vlarl_libero",
+            logdir="rollouts_base",
         )
