@@ -15,10 +15,9 @@ class SchedulerExternal(Scheduler):
         num_active,
         *,
         result_archive=None,
-        add_mode="batch"
     ):
         super().__init__(
-            archive, emitters, result_archive=result_archive, add_mode=add_mode
+            archive, emitters, result_archive=result_archive, add_mode="batch"
         )
         self._num_active = num_active
         self._emitters = np.array(self._emitters)
@@ -26,7 +25,7 @@ class SchedulerExternal(Scheduler):
 
     @property
     def emitters(self):
-        """Returns the"""
+        """Returns active emitters."""
         return self._emitters[self._active_arr]
 
     def _validate_tell_data(self, data):
@@ -113,7 +112,12 @@ class SchedulerExternal(Scheduler):
         jacobian = np.asarray(jacobian)
         self._check_length("jacobian", jacobian)
 
-        add_info = self._add_to_archives(data)
+        # objective = 0 means the environment is not feasible to VLA
+        # in this case do not add
+        valid_index = np.where(objective > 0)
+        add_info = self._add_to_archives(
+            {k: v[valid_index] for k, v in data.items()}
+        )
 
         assert "injected" in fields
         data["injected"] = fields["injected"]
@@ -144,7 +148,12 @@ class SchedulerExternal(Scheduler):
             }
         )
 
-        add_info = self._add_to_archives(data)
+        # objective = 0 means the environment is not feasible to VLA
+        # in this case do not add
+        valid_index = np.where(objective > 0)
+        add_info = self._add_to_archives(
+            {k: v[valid_index] for k, v in data.items()}
+        )
 
         assert "injected" in fields
         data["injected"] = fields["injected"]

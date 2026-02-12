@@ -18,6 +18,7 @@ class BanditSchedulerExternal(BanditScheduler):
             num_active=num_active,
             **kwargs,
         )
+        self._add_mode = "batch"
 
     @property
     def emitters(self):
@@ -54,27 +55,18 @@ class BanditSchedulerExternal(BanditScheduler):
             result_archive_empty_before = self.result_archive.empty
 
         # Add solutions to the archive.
-        if self._add_mode == "batch":
-            add_info = self.archive.add(**data)
+        # objective = 0 means the environment is not feasible to VLA
+        # in this case do not add
+        valid_index = np.where(objective > 0)
+        add_info = self.archive.add(
+            **{k: v[valid_index] for k, v in data.items()}
+        )
 
-            # Add solutions to result_archive.
-            if self._result_archive is not None:
-                self._result_archive.add(**data)
-        elif self._add_mode == "single":
-            add_info = defaultdict(list)
-
-            for i in range(len(self._cur_solutions)):
-                single_data = {name: arr[i] for name, arr in data.items()}
-                single_info = self.archive.add_single(**single_data)
-                for name, val in single_info.items():
-                    add_info[name].append(val)
-
-                # Add solutions to result_archive.
-                if self._result_archive is not None:
-                    self._result_archive.add_single(**single_data)
-
-            for name, arr in add_info.items():
-                add_info[name] = np.asarray(arr)
+        # Add solutions to result_archive.
+        if self._result_archive is not None:
+            self._result_archive.add(
+                **{k: v[valid_index] for k, v in data.items()}
+            )
 
         # Warn the user if nothing was inserted into the archives.
         if archive_empty_before and self.archive.empty:

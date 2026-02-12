@@ -4,7 +4,6 @@ qd_archive:
   _target_: ribs.archives.GridArchive
   dims: [100, 100]
   ranges: [[0,1], [0,1]]
-  threshold_min: 0.01
   seed: ${seed}
 
 # For saving all results found throughout the search.
@@ -12,7 +11,6 @@ qd_archive:
 logging_archive:
   _target_: src.myribs.archives.LoggingArchive
   starting_cells: ${oc.mul:2, ${oc.add:${collect_embedding_num_evals}, ${env_search_num_evals}}} # 2 * evaluation budget to make sure hashing succeeds
-  threshold_min: 0.01
 
 emitter:
   _target_: src.myribs.emitters.FixedGaussianEmitter

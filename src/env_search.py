@@ -374,24 +374,25 @@ def main(cfg: DictConfig):
                 all_measures.extend(measures)
                 all_task_id += [em.task_id] * cfg.envgen.emitter.batch_size
 
-                for sol_rollouts in trajectories:
+                for env_rollouts in trajectories:
                     all_embedding.append(
                         np.mean(
                             [
                                 traj.embedding[
                                     0
                                 ]  # first embedding before any action
-                                for traj in sol_rollouts
+                                for traj in env_rollouts
                                 if len(traj.embedding) > 0
                             ],
                             axis=0,
                         )
                     )
 
-                # Saves successful trajectories to the temporary dataset if they
-                # come from an environment whose rollout success rate entropy > 0
-                for entropy, env_rollouts in zip(objective, trajectories):
-                    if entropy > 0.01:
+                # Saves successful trajectories to the temporary dataset if
+                # they come from a challenging environment on which at least
+                # 1 rollout failed (or else there's nothing to learn)
+                for env_rollouts in trajectories:
+                    if np.any([not traj.success for traj in env_rollouts]):
                         for traj in env_rollouts:
                             if traj.success:
                                 temp_succ_dataset.write_episode(trajectory=traj)
@@ -415,7 +416,7 @@ def main(cfg: DictConfig):
 
             scheduler.tell(
                 # Penalize objective with MILP editing distance if there is any
-                np.clip(all_objective - edit_dists, a_min=1e-6, a_max=None),
+                np.clip(all_objective - edit_dists, a_min=0, a_max=None),
                 all_measures,
                 solution=all_repaired,
                 injected=injected,
@@ -427,8 +428,6 @@ def main(cfg: DictConfig):
             archive_data = scheduler.result_archive.data(
                 ["objective", "embedding"]
             )
-            num_valid_env = np.sum(archive_data["objective"] > 0.01)
-            # TODO: len(scheduler.result_archive)
             avg_emb_dist = np.mean(
                 pairwise_distances(
                     X=archive_data["embedding"], metric="euclidean"
@@ -447,7 +446,7 @@ def main(cfg: DictConfig):
                 f"\t Coverage     : {scheduler.archive.stats.coverage}\n"
                 f"\t Maximum      : {scheduler.archive.stats.obj_max}\n"
                 f"\t Average      : {scheduler.archive.stats.obj_mean}\n"
-                f"\t Num.ValidEnv : {num_valid_env}\n"
+                f"\t Num.ValidEnv : {len(scheduler.result_archive)}\n"
                 f"\t Avg.EmbDist  : {avg_emb_dist}\n"
                 f"\t Vendi-Score  : {emb_vendi}\n"
                 f"\t QVendi-Score : {emb_qvendi}\n"
@@ -469,7 +468,7 @@ def main(cfg: DictConfig):
                         scheduler.archive.stats.coverage,
                         scheduler.archive.stats.obj_max,
                         scheduler.archive.stats.obj_mean,
-                        num_valid_env,
+                        len(scheduler.result_archive),
                         avg_emb_dist,
                         emb_vendi,
                         emb_qvendi,

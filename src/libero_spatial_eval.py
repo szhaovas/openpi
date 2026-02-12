@@ -181,7 +181,8 @@ class LiberoSpatialEval:
                 success rate on the environment created from ``solution``
                 across all trials.
                 - If :attr:`objective_func` is ``entropy``, this is entropy of
-                the aforementioned success rate.
+                the aforementioned success rate if success rate is greater than
+                0, or 0 if success rate is 0.
                 - If :attr:`objective_func` is ``adversarial``, this is either
                 ``1-success_rate`` if success rate is greater than 0, or 0 if
                 success rate is 0.
@@ -256,7 +257,7 @@ class LiberoSpatialEval:
             entropy = -success_rate * math.log2(success_rate) - (
                 1 - success_rate
             ) * math.log2(1 - success_rate)
-            objective = entropy
+            objective = 0 if success_rate == 0 else entropy
         elif self.objective_func == "adversarial":
             objective = 0 if success_rate == 0 else 1 - success_rate
         else:
