@@ -45,7 +45,7 @@ do
           ;;
       OpenVLA)
           tmux send-keys -t "$EXP_NAME:0.$((server_id+1))" "
-            cd openvla
+            cd openvla_oft
             CUDA_VISIBLE_DEVICES="${GPU_IDs[$server_id]}" uv run -m vla_scripts.ws_vla_server --port "${VLA_SERVER_URIs[$server_id]##*:}"
           " C-m
           ;;
