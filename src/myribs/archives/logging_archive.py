@@ -2,12 +2,9 @@ import hashlib
 import logging
 
 import numpy as np
-from ribs._utils import check_finite, validate_batch, validate_single
+from ribs._utils import check_finite, validate_single
 from ribs.archives import ArchiveBase, ArrayStore
-from ribs.archives._transforms import (
-    batch_entries_with_threshold,
-    single_entry_with_threshold,
-)
+from ribs.archives._transforms import single_entry_with_threshold
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +50,9 @@ class LoggingArchive(ArchiveBase):
         self.add(**cur_data)
 
     def index_of(self, measures):
-        return np.asarray(
-            [self.index_of_single(mea) for mea in measures], dtype=np.int32
+        raise NotImplementedError(
+            "index_of for batch may not return unique "
+            "indices. Use index_of_single instead"
         )
 
     def index_of_single(self, measures):
@@ -82,41 +80,15 @@ class LoggingArchive(ArchiveBase):
         return index
 
     def add(self, solution, objective, measures, **fields):
-        indices = self.index_of(measures)
-
-        data = validate_batch(
-            self,
-            {
-                "solution": solution,
-                "objective": objective,
-                "measures": np.expand_dims(
-                    indices, axis=1
-                ),  # Saves indices instead of measures
-                **fields,
-            },
-        )
-
-        batch_size = data["solution"].shape[0]
-        if len(self) + batch_size >= self._cells:
-            new_cells = 2 * self._cells
-            logger.warning(f"Upsizing from {self._cells} to {new_cells}")
-            self._upsize(new_cells)
-
-        self._store.add(
-            indices,
-            data,
-            {
-                "dtype": self._dtype,
-                "learning_rate": self._learning_rate,
-                "threshold_min": self._threshold_min,
-                "objective_sum": self._objective_sum,
-            },
-            [
-                batch_entries_with_threshold,
-            ],
-        )
+        for i, (sol, obj, meas) in enumerate(
+            zip(solution, objective, measures)
+        ):
+            self.add_single(
+                sol, obj, meas, **{k: v[i] for k, v in fields.items()}
+            )
 
         # Dummy add_info.
+        batch_size = np.asarray(solution).shape[0]
         return {
             "status": np.zeros(batch_size, dtype=np.int32),
             "value": np.zeros(batch_size, dtype=np.float64),

@@ -19,6 +19,7 @@ from src.env_search import (
 )
 from src.libero_spatial_eval import LiberoSpatialEval
 from src.measures import PCAMeasure
+from src.myribs.archives import LoggingArchive
 
 
 def show_interactive_archive(
@@ -40,6 +41,7 @@ def show_interactive_archive(
         LiberoSpatialEval(
             task_id=tid,
             objective_func="success_rate",
+            measure_func=None,
             num_trials_per_sol=len(vla_server_uris),
             vla_server_uris=vla_server_uris,
             dask_client=client,
@@ -120,8 +122,13 @@ def host_interactive_archive(
     interact with the plot on your local machine's browser.
 
     Args:
-        archive (GridArchive): Archive to be displayed.
-        port (int): The port on which to display the plot.
+        archive: Archive to be displayed.
+        vla_server_uris: A list of <ip>:<port> where this function can query
+            VLA servers. Each environment is rolled out one time on each URI,
+            so the number of URIs provided.
+        port: The port on which to display the plot.
+        logdir: Name of the directory in which rollout information (such as
+            videos) will be stored.
     """
     if len(vla_server_uris) > 1:
         cluster = LocalCluster(
@@ -137,6 +144,7 @@ def host_interactive_archive(
         LiberoSpatialEval(
             task_id=tid,
             objective_func="success_rate",
+            measure_func=None,
             num_trials_per_sol=len(vla_server_uris),
             vla_server_uris=vla_server_uris,
             dask_client=client,
@@ -217,6 +225,7 @@ def success_rates_on_envs(
         LiberoSpatialEval(
             task_id=tid,
             objective_func="success_rate",
+            measure_func=None,
             num_trials_per_sol=len(vla_server_uris),
             vla_server_uris=vla_server_uris,
             dask_client=client,
@@ -228,21 +237,21 @@ def success_rates_on_envs(
         for tid in range(10)
     ]
 
-    num_envs_per_task = len(env_archive) // 10
-    success_rates_archive = GridArchive(
+    success_rates_archive = LoggingArchive(
         solution_dim=env_archive.solution_dim,
-        dims=[10, num_envs_per_task],
-        ranges=[[0, 10], [0, num_envs_per_task]],
+        starting_cells=2 * len(env_archive),
+        extra_fields={
+            "task_id": (
+                (),
+                np.int32,
+            )
+        },
     )
 
-    env_counters = [0] * 10
-    for cell in tqdm(env_archive):
+    for env_id, cell in enumerate(tqdm(env_archive)):
         task_id = cell["task_id"]
-        env_id = env_counters[task_id]
 
-        rollout_dataset = TempDataset(
-            dataset_dir=logpath / f"task{task_id}_env{env_id}"
-        )
+        rollout_dataset = TempDataset(dataset_dir=logpath / f"env{env_id}")
 
         _, objective, _, trajectories = evaluators[task_id].evaluate_single(
             solution=cell["solution"]
@@ -251,65 +260,109 @@ def success_rates_on_envs(
         success_rates_archive.add_single(
             solution=cell["solution"],
             objective=objective,
-            measures=[task_id, env_id],
+            measures=cell["measures"],
+            task_id=task_id,
         )
 
-        env_counters[task_id] += 1
-
-        tqdm.write(f"task{task_id}_env{env_id} success rate: {objective}")
+        tqdm.write(f"env{env_id}(task{task_id}) success rate: {objective}")
 
         for traj in trajectories:
             rollout_dataset.write_episode(trajectory=traj)
 
         safe_pickle_dump(success_rates_archive, logpath / "success_rates.pkl")
 
-        save_heatmap(success_rates_archive, str(logpath / "success_rates.png"))
+
+def sample_test_envs(
+    env_archive: ArchiveBase, p: float, save_to: Optional[str] = None
+) -> LoggingArchive:
+    assert 0 < p <= 1
+
+    archive_data = env_archive.data(
+        ["solution", "measures", "objective", "task_id"]
+    )
+    feasible_env_idx = np.where(archive_data["objective"] > 0.01)[0]
+    num_test_envs = round(len(feasible_env_idx) * p)
+
+    test_env_idx = np.random.choice(
+        feasible_env_idx, size=num_test_envs, replace=False
+    )
+
+    test_env_archive = LoggingArchive(
+        solution_dim=env_archive.solution_dim,
+        starting_cells=2 * num_test_envs,
+        extra_fields={
+            "task_id": (
+                (),
+                np.int32,
+            )
+        },
+    )
+    test_env_archive.add(
+        solution=archive_data["solution"][test_env_idx],
+        measures=archive_data["measures"][test_env_idx],
+        objective=archive_data["objective"][test_env_idx],
+        task_id=archive_data["task_id"][test_env_idx],
+    )
+
+    if save_to is not None:
+        safe_pickle_dump(test_env_archive, Path(save_to))
+
+    return test_env_archive
 
 
-def redraw_heatmap(
+def redraw_heatmap_pca(
     experiment_logdir: str,
-    encoder_ckpt_path: str,
-):
-    measure_model = PCAMeasure(ckpt_path=encoder_ckpt_path)
+    measure_model_ckpt: str,
+) -> np.ndarray:
+    """Redraws QD archive heatmaps for an experiment log at ``experiment_logdir``,
+    using a new measure model loaded from ``measure_model_ckpt``. Useful for
+    visualizing archive heatmap progression for domain randomization experiments
+    that don't use measure models.
+
+    Args:
+        experiment_logdir: The experiment logging directory for which to redraw
+            the heatmaps. Old heatmaps will be overwritten.
+        measure_model_ckpt: The checkpoint from which to reload the measure
+            model.
+
+    Returns:
+        coverages: An array containing the updated coverage for each redrawn
+            heatmap. The coverages come sorted by the number of evaluations.
+            You can use them to manually overwrite summary.txt if needed.
+    """
+    measure_model = PCAMeasure(ckpt_path=measure_model_ckpt)
 
     all_nevals = extract_scheduler_nevals(experiment_logdir)
 
-    all_qd_scores = []
     all_coverages = []
     for filename, nevals in all_nevals.items():
-        print(filename)
         with open(file=filename, mode="rb") as f:
             archive = pkl.load(f).archive
 
-        dummy_archive = GridArchive(
+        new_measure_archive = GridArchive(
             solution_dim=archive.solution_dim,
-            dims=[100, 100],
-            ranges=[[0, 1], [0, 1]],
+            dims=[100, 100],  # update if needed
+            ranges=[[0, 1], [0, 1]],  # update if needed
         )
 
-        Z = measure_model.model.transform(archive.data("embedding"))
-        measures = (
-            Z - (measure_model.lb - 0.5 * (measure_model.ub - measure_model.lb))
-        ) / (2 * (measure_model.ub - measure_model.lb))
+        measures = measure_model.compute_measures_from_embeddings(
+            archive.data("embedding")
+        )
 
-        dummy_archive.add(
+        new_measure_archive.add(
             solution=archive.data("solution"),
             objective=archive.data("objective"),
             measures=measures,
         )
 
-        all_qd_scores.append(dummy_archive.stats.qd_score)
-        all_coverages.append(dummy_archive.stats.coverage)
+        all_coverages.append(new_measure_archive.stats.coverage)
 
-        # save_heatmap(
-        #     dummy_archive, f"{experiment_logdir}/heatmap_{nevals:08d}.png"
-        # )
-    all_qd_scores = np.array(all_qd_scores)
-    all_qd_scores = all_qd_scores[np.argsort(list(all_nevals.values()))]
-    print(all_qd_scores)
+        save_heatmap(
+            new_measure_archive, f"{experiment_logdir}/heatmap_{nevals:08d}.png"
+        )
+
     all_coverages = np.array(all_coverages)
-    all_coverages = all_coverages[np.argsort(list(all_nevals.values()))]
-    print(all_coverages)
+    return all_coverages[np.argsort(list(all_nevals.values()))]
 
 
 def tally_traj_by_task(
@@ -336,34 +389,19 @@ def tally_traj_by_task(
 
 
 if __name__ == "__main__":
-    # with open(
-    #     file="outputs/domain_randomization/2026-02-07_003429/embeddings/test_scenarios.pkl",
-    #     mode="rb",
-    # ) as f:
-    #     env_archive = pkl.load(f)
-    #     success_rates_on_envs(
-    #         env_archive=env_archive,
-    #         vla_server_uris=[
-    #             "0.0.0.0:8001",
-    #             "0.0.0.0:8002",
-    #             "0.0.0.0:8003",
-    #             "0.0.0.0:8004",
-    #         ],
-    #         logdir="vlarl_libero",
-    #     )
-
     with open(
-        file="results/domain_randomization/scheduler_00002304.pkl",
+        file="results/domain_randomization/test_envs.pkl",
         mode="rb",
     ) as f:
-        archive = pkl.load(f).archive
-        host_interactive_archive(
-            archive,
-            vla_server_uris=[
-                "0.0.0.0:8001",
-                "0.0.0.0:8002",
-                "0.0.0.0:8003",
-                "0.0.0.0:8004",
-            ],
-            logdir="rollouts_base",
-        )
+        test_env_archive = pkl.load(f)
+
+    success_rates_on_envs(
+        env_archive=test_env_archive,
+        vla_server_uris=[
+            "0.0.0.0:8001",
+            "0.0.0.0:8002",
+            "0.0.0.0:8003",
+            "0.0.0.0:8004",
+        ],
+        logdir="dm_in_dist",
+    )

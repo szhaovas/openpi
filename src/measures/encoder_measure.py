@@ -2,9 +2,9 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Type, Union
 
+import numpy as np
 import torch
 import tqdm
-from numpy.typing import NDArray
 from torch.utils.data import DataLoader
 
 from src.dataset_utils import (
@@ -127,7 +127,7 @@ class EncoderMeasure(MeasureModel):
         logger.warning(f"Saved encoder checkpoint to {path}")
 
     @torch.no_grad()
-    def compute_measures(self, trajectories: List[Trajectory]) -> NDArray:
+    def compute_measures(self, trajectories: List[Trajectory]) -> np.ndarray:
         if isinstance(self.model, VAE):
             x = embedding_collate(trajectories).to(self.device)
             z, _, _ = self.model(x)

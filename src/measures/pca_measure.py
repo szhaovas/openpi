@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
-from numpy.typing import NDArray
 from sklearn.decomposition import KernelPCA
 from sklearn.metrics import pairwise_distances
 
@@ -72,10 +71,15 @@ class PCAMeasure(MeasureModel):
 
         logger.warning(f"Saved pca checkpoint to {path}")
 
-    def compute_measures(self, trajectories: List[Trajectory]) -> NDArray:
-        embeddings = embedding_collate(trajectories).detach().cpu().numpy()
+    def compute_measures_from_embeddings(
+        self, embeddings: np.ndarray
+    ) -> np.ndarray:
         Z = self.model.transform(embeddings)
         # min-max normalization to 2 * [lb, ub]
         return (Z - (self.lb - 0.5 * (self.ub - self.lb))) / (
             2 * (self.ub - self.lb)
         )
+
+    def compute_measures(self, trajectories: List[Trajectory]) -> np.ndarray:
+        embeddings = embedding_collate(trajectories).detach().cpu().numpy()
+        return self.compute_measures_from_embeddings(embeddings)

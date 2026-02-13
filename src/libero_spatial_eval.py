@@ -6,10 +6,10 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from dask.distributed import Client
-from libero.libero.envs import OffScreenRenderEnv
 from numpy.typing import NDArray
 
 from libero.libero import benchmark
+from libero.libero.envs import OffScreenRenderEnv
 from src.dataset_utils import Trajectory
 from src.measures import MeasureModel
 from src.vla_client.websocket_client_policy import WebsocketClientPolicy

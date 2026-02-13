@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from numpy.typing import NDArray
+import numpy as np
 from omegaconf import DictConfig
 
 from src.dataset_utils import Trajectory
@@ -74,5 +74,5 @@ class MeasureModel(ABC):
         """ """
 
     @abstractmethod
-    def compute_measures(self, trajectories: List[Trajectory]) -> NDArray:
+    def compute_measures(self, trajectories: List[Trajectory]) -> np.ndarray:
         """ """

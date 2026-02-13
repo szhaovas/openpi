@@ -200,7 +200,7 @@ def collect_embeddings(colemb_cfg: DictConfig):
                 task_id=all_task_id,
             )
 
-    safe_pickle_dump(scheduler.archive, embedding_logdir / "test_scenarios.pkl")
+    safe_pickle_dump(scheduler.archive, embedding_logdir / "test_envs.pkl")
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="main")
