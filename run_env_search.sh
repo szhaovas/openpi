@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 
 EXP_NAME=$1 # cma_mae or domain_randomization
-VLA_TYPE=$2 # OpenPi or OpenVLA
+VLA_TYPE=$2 # openpi or openvla
 VLA_SERVER_URIs=(
-  "0.0.0.0:8005" # space after each uri string
-  # "0.0.0.0:8006" # this script assumes ip to be local host
-  # "0.0.0.0:8007" 
-  # "0.0.0.0:8008" 
+  "0.0.0.0:8000" # space after each uri string
+  "0.0.0.0:8001" # this script assumes ip to be local host
 ) # By default, the number of uris sets cfg.eval.task_eval.num_trials_per_sol
-GPU_IDs=(3) # should have the same length as VLA_SERVER_URIs
+GPU_IDs=(0 1) # should have the same length as VLA_SERVER_URIs
 
 # Check if session exists
 if tmux has-session -t "$EXP_NAME" 2>/dev/null; then
@@ -37,13 +35,13 @@ do
     tmux split-window -v
   fi
   case "$VLA_TYPE" in
-      OpenPi)
+      openpi)
           tmux send-keys -t "$EXP_NAME:0.$((server_id+1))" "
             cd openpi
             CUDA_VISIBLE_DEVICES="${GPU_IDs[$server_id]}" uv run scripts/serve_policy.py --env LIBERO --port "${VLA_SERVER_URIs[$server_id]##*:}"
           " C-m
           ;;
-      OpenVLA)
+      openvla)
           tmux send-keys -t "$EXP_NAME:0.$((server_id+1))" "
             cd openvla_oft
             CUDA_VISIBLE_DEVICES="${GPU_IDs[$server_id]}" uv run -m vla_scripts.ws_vla_server --port "${VLA_SERVER_URIs[$server_id]##*:}"

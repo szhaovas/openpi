@@ -22,14 +22,6 @@ python -m ensurepip
 python CPLEX_Studio201/python/setup.py install
 ```
 
-```bash
-# Install OpenVLA-OFT (TODO: Make a pyproject so we don't need to install seperately)
-cd openvla_oft
-uv venv --python 3.10
-uv pip install -r requirements.txt
-```
-
-
 ## Run QD search
 ```bash
 ./run_env_search.sh <envgen> <vla>

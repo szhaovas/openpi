@@ -389,10 +389,12 @@ def main(cfg: DictConfig):
                     )
 
                 # Saves successful trajectories to the temporary dataset if
-                # they come from a challenging environment on which at least
-                # 1 rollout failed (or else there's nothing to learn)
+                # they come from a challenging yet feasible environment on
+                # which there are some successful and some failed rollouts
                 for env_rollouts in trajectories:
-                    if np.any([not traj.success for traj in env_rollouts]):
+                    if np.any(
+                        [traj.success for traj in env_rollouts]
+                    ) and np.any([not traj.success for traj in env_rollouts]):
                         for traj in env_rollouts:
                             if traj.success:
                                 temp_succ_dataset.write_episode(trajectory=traj)
