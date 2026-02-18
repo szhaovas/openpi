@@ -4,7 +4,7 @@
 	branch = parallelized
 [submodule "openpi"]
 	path = openpi
-	url = https://github.com/Physical-Intelligence/openpi.git
+	url = https://github.com/HenryChen4/openpi.git
 [submodule "openvla_oft"]
 	path = openvla_oft
 	url = https://github.com/henyhechen/openvla-oft.git
