@@ -193,12 +193,14 @@ class LiberoSpatialEval:
             trajectories (List[Trajectory]): Array of shape (ntrials,)
                 containing all rollout trajectories.
         """
-        try:
-            env = self._eval_stub(env_params=solution)
-            env.reset()
-            repaired_solution = env.env.env_params.copy()
-        except Exception as e:
-            logger.warning(e)
+        env = self._eval_stub(env_params=solution)
+        obs = env.reset()
+        repaired_solution = env.env.env_params.copy()
+
+        if obs is None:
+            logger.warning(
+                "Failed to repair environment, skipping evaluation..."
+            )
             # TODO: How to represent a solution that cannot be repaired
             return (
                 solution.copy(),
@@ -471,7 +473,8 @@ def rollout(
             }
 
             inference_obj = vla_policy.infer(element)
-            trajectory.embedding.append(inference_obj["pre_logits"])
+            if "pre_logits" in inference_obj.keys():
+                trajectory.embedding.append(inference_obj["pre_logits"])
 
             action_chunk = np.atleast_2d(inference_obj["actions"])
             if len(action_chunk) < replan_steps:

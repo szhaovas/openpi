@@ -112,12 +112,7 @@ class SchedulerExternal(Scheduler):
         jacobian = np.asarray(jacobian)
         self._check_length("jacobian", jacobian)
 
-        # objective = 0 means the environment is not feasible to VLA
-        # in this case do not add
-        valid_index = np.where(objective > 0)
-        add_info = self._add_to_archives(
-            {k: v[valid_index] for k, v in data.items()}
-        )
+        add_info = self._add_to_archives(data)
 
         assert "injected" in fields
         data["injected"] = fields["injected"]
@@ -148,12 +143,7 @@ class SchedulerExternal(Scheduler):
             }
         )
 
-        # objective = 0 means the environment is not feasible to VLA
-        # in this case do not add
-        valid_index = np.where(objective > 0)
-        add_info = self._add_to_archives(
-            {k: v[valid_index] for k, v in data.items()}
-        )
+        add_info = self._add_to_archives(data)
 
         assert "injected" in fields
         data["injected"] = fields["injected"]

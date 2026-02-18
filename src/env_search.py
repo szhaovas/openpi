@@ -293,7 +293,7 @@ def main(cfg: DictConfig):
                     "Coverage",
                     "Maximum",
                     "Average",
-                    "Num.ValidEnv",
+                    "Num.Envs",
                     "Avg.EmbDist",
                     "Vendi-Score",
                     "QVendi-Score",
@@ -418,7 +418,7 @@ def main(cfg: DictConfig):
 
             scheduler.tell(
                 # Penalize objective with MILP editing distance if there is any
-                np.clip(all_objective - edit_dists, a_min=0, a_max=None),
+                np.clip(all_objective - edit_dists, a_min=1e-6, a_max=None),
                 all_measures,
                 solution=all_repaired,
                 injected=injected,
@@ -430,13 +430,16 @@ def main(cfg: DictConfig):
             archive_data = scheduler.result_archive.data(
                 ["objective", "embedding"]
             )
+            feasible_env_idx = np.where(archive_data["objective"] > 1e-6)[0]
+            num_feasible_envs = len(feasible_env_idx)
             avg_emb_dist = np.mean(
                 pairwise_distances(
-                    X=archive_data["embedding"], metric="euclidean"
+                    X=archive_data["embedding"][feasible_env_idx],
+                    metric="euclidean",
                 )
             )
             rbf_K = rbf_kernel(
-                X=archive_data["embedding"], gamma=0.002
+                X=archive_data["embedding"][feasible_env_idx], gamma=0.002
             )  # gamma is chosen to match median embedding distance
             emb_vendi = vendi.score_K(rbf_K, normalize=True)
             emb_qvendi = np.mean(archive_data["objective"]) * emb_vendi
@@ -448,7 +451,7 @@ def main(cfg: DictConfig):
                 f"\t Coverage     : {scheduler.archive.stats.coverage}\n"
                 f"\t Maximum      : {scheduler.archive.stats.obj_max}\n"
                 f"\t Average      : {scheduler.archive.stats.obj_mean}\n"
-                f"\t Num.ValidEnv : {len(scheduler.result_archive)}\n"
+                f"\t Num.Envs     : {num_feasible_envs}\n"
                 f"\t Avg.EmbDist  : {avg_emb_dist}\n"
                 f"\t Vendi-Score  : {emb_vendi}\n"
                 f"\t QVendi-Score : {emb_qvendi}\n"
@@ -470,7 +473,7 @@ def main(cfg: DictConfig):
                         scheduler.archive.stats.coverage,
                         scheduler.archive.stats.obj_max,
                         scheduler.archive.stats.obj_mean,
-                        len(scheduler.result_archive),
+                        num_feasible_envs,
                         avg_emb_dist,
                         emb_vendi,
                         emb_qvendi,

@@ -55,18 +55,11 @@ class BanditSchedulerExternal(BanditScheduler):
             result_archive_empty_before = self.result_archive.empty
 
         # Add solutions to the archive.
-        # objective = 0 means the environment is not feasible to VLA
-        # in this case do not add
-        valid_index = np.where(objective > 0)
-        add_info = self.archive.add(
-            **{k: v[valid_index] for k, v in data.items()}
-        )
+        add_info = self.archive.add(**data)
 
         # Add solutions to result_archive.
         if self._result_archive is not None:
-            self._result_archive.add(
-                **{k: v[valid_index] for k, v in data.items()}
-            )
+            self._result_archive.add(**data)
 
         # Warn the user if nothing was inserted into the archives.
         if archive_empty_before and self.archive.empty:
