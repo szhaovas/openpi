@@ -473,8 +473,8 @@ def rollout(
             }
 
             inference_obj = vla_policy.infer(element)
-            if "pre_logits" in inference_obj.keys():
-                trajectory.embedding.append(inference_obj["pre_logits"])
+            if "embedding" in inference_obj:
+                trajectory.embedding.append(inference_obj["embedding"])
 
             action_chunk = np.atleast_2d(inference_obj["actions"])
             if len(action_chunk) < replan_steps:
