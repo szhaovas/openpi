@@ -369,15 +369,15 @@ def tally_traj_by_task(
     traj_dataset: TempDataset, max_traj_len: Optional[int] = None
 ) -> Dict[str, List]:
     traj_id_by_task = {
-        "pick the akita black bowl from table center and place it on the plate": [],
-        "pick the akita black bowl next to the plate and place it on the plate": [],
-        "pick the akita black bowl on the ramekin and place it on the plate": [],
-        "pick the akita black bowl next to the ramekin and place it on the plate": [],
-        "pick the akita black bowl on the cookies box and place it on the plate": [],
-        "pick the akita black bowl on the stove and place it on the plate": [],
-        "pick the akita black bowl next to the cookies box and place it on the plate": [],
         "pick the akita black bowl between the plate and the ramekin and place it on the plate": [],
+        "pick the akita black bowl next to the ramekin and place it on the plate": [],
+        "pick the akita black bowl from table center and place it on the plate": [],
+        "pick the akita black bowl on the cookies box and place it on the plate": [],
         "pick the akita black bowl in the top layer of the wooden cabinet and place it on the plate": [],
+        "pick the akita black bowl on the ramekin and place it on the plate": [],
+        "pick the akita black bowl next to the cookies box and place it on the plate": [],
+        "pick the akita black bowl on the stove and place it on the plate": [],
+        "pick the akita black bowl next to the plate and place it on the plate": [],
         "pick the akita black bowl on the wooden cabinet and place it on the plate": [],
     }
     for traj_id, traj in enumerate(tqdm(traj_dataset)):
@@ -390,18 +390,46 @@ def tally_traj_by_task(
 
 if __name__ == "__main__":
     with open(
-        file="results/domain_randomization/test_envs.pkl",
+        file="test_envs.pkl",
         mode="rb",
     ) as f:
-        test_env_archive = pkl.load(f)
+        env_archive = pkl.load(f)
 
-    success_rates_on_envs(
-        env_archive=test_env_archive,
-        vla_server_uris=[
-            "0.0.0.0:8001",
-            "0.0.0.0:8002",
-            "0.0.0.0:8003",
-            "0.0.0.0:8004",
-        ],
-        logdir="dm_in_dist",
-    )
+        success_rates_on_envs(
+            env_archive, 
+            [
+                '10.136.109.136:52800', # unicron 8000
+                # '10.136.109.136:52801', # unicron 8001
+                '10.136.109.136:51800', # primus 8000
+                '10.136.109.136:51801', # primus 8001
+                '10.136.109.136:50800', # momo 8000
+                # '10.136.109.136:53800', # atlas 8000
+            ],
+            "success_rates"
+        )
+
+    # with open(
+    #     file="dataset_3_success_rates/success_rates.pkl",
+    #     mode="rb",
+    # ) as f:
+    #     success_rates = pkl.load(f)
+
+    #     dummy_archive = GridArchive(
+    #         solution_dim=success_rates.solution_dim,
+    #         dims=[10, 32],  # update if needed
+    #         ranges=[[0, 10], [0, 32]],  # update if needed
+    #     )
+
+    #     env_counter = [0] * 10
+    #     for cell in success_rates:
+    #         task_id = cell["task_id"]
+    #         dummy_archive.add_single(solution=cell["solution"], objective=cell["objective"], measures=[task_id, env_counter[task_id]])
+    #         env_counter[task_id] += 1
+
+    #     colors = np.full((32, 10), np.nan)
+    #     index_batch = dummy_archive.data("index")
+    #     objective_batch = dummy_archive.data("objective")
+    #     grid_index_batch = dummy_archive.int_to_grid_index(index_batch)
+    #     colors[grid_index_batch[:, 1], grid_index_batch[:, 0]] = objective_batch
+
+    #     print(np.mean(colors, axis=0))

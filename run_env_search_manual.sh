@@ -4,8 +4,14 @@
 
 EXP_NAME=$1 # cma_mae or domain_randomization
 VLA_SERVER_URIs=(
-  "10.136.109.136:8003" # space after each uri string
-  "0.0.0.0:8003" # ip doesn't have to be local host
+  # "0.0.0.0:8003" # space after each uri string
+  # "10.136.109.136:8003" # ip doesn't have to be local host
+  "10.136.109.136:52800" # unicron 8000
+  # "10.136.109.136:52801" # unicron 8001
+  "10.136.109.136:51800" # primus 8000
+  "10.136.109.136:51801" # primus 8001
+  "10.136.109.136:50800" # momo 8000
+  # "10.136.109.136:53800" # atlas 8000
 ) # By default, the number of uris sets cfg.eval.task_eval.num_trials_per_sol
 
 # Check if session exists
