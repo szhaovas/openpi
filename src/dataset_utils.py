@@ -110,8 +110,9 @@ class TempDataset(Dataset):
         if trajectory.prompt is None:
             logger.warning("Cannot write empty trajectory")
             return
-
-        eps_dir = self.dataset_dir / f"ep_{len(self):05d}"
+        
+        traj_id = len(self)
+        eps_dir = self.dataset_dir / f"ep_{traj_id:05d}"
         eps_dir.mkdir()
 
         np.savez(
@@ -140,6 +141,8 @@ class TempDataset(Dataset):
                 writer.append_data(img)
 
         self._num_eps += 1
+
+        return traj_id
 
     def convert_to_lerobot(
         self, repo_id: str, max_traj_len: Optional[int] = None
