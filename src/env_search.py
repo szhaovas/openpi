@@ -410,25 +410,37 @@ def main(cfg: DictConfig):
                 # they come from a challenging yet feasible environment on
                 # which there are some successful and some failed rollouts
                 for env_rollouts in trajectories:
-                    succ_traj_id = np.full(cfg.eval.task_eval.num_trials_per_sol, np.nan)
-                    fail_traj_id = np.full(cfg.eval.task_eval.num_trials_per_sol, np.nan)
-                    
+                    succ_traj_id = np.full(
+                        cfg.eval.task_eval.num_trials_per_sol, np.nan
+                    )
+                    fail_traj_id = np.full(
+                        cfg.eval.task_eval.num_trials_per_sol, np.nan
+                    )
+
                     if np.any(
                         [traj.success for traj in env_rollouts]
                     ) and np.any([not traj.success for traj in env_rollouts]):
                         stid, ftid = [], []
                         for traj in env_rollouts:
                             if traj.success:
-                                stid.append(temp_succ_dataset.write_episode(trajectory=traj))
+                                stid.append(
+                                    temp_succ_dataset.write_episode(
+                                        trajectory=traj
+                                    )
+                                )
                             else:
-                                ftid.append(temp_fail_dataset.write_episode(trajectory=traj))
-                        
-                        succ_traj_id[:len(stid)] = stid
-                        fail_traj_id[:len(ftid)] = ftid
-                    
-                    all_succ_traj_id.extend(succ_traj_id)
-                    all_fail_traj_id.extend(fail_traj_id)
-                    
+                                ftid.append(
+                                    temp_fail_dataset.write_episode(
+                                        trajectory=traj
+                                    )
+                                )
+
+                        succ_traj_id[: len(stid)] = stid
+                        fail_traj_id[: len(ftid)] = ftid
+
+                    all_succ_traj_id.append(succ_traj_id)
+                    all_fail_traj_id.append(fail_traj_id)
+
             all_repaired = np.array(all_repaired)
             all_objective = np.array(all_objective)
             all_measures = np.array(all_measures)
@@ -436,7 +448,6 @@ def main(cfg: DictConfig):
             all_embedding = np.array(all_embedding)
             all_succ_traj_id = np.array(all_succ_traj_id)
             all_fail_traj_id = np.array(all_fail_traj_id)
-            print(all_succ_traj_id)
 
             edit_dists = np.linalg.norm(all_repaired - solutions, axis=1)
             # Solutions that have been modified by external repair are no longer

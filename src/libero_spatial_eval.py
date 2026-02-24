@@ -1,7 +1,7 @@
-import os
 import collections
 import logging
 import math
+import os
 from functools import partial
 from typing import Dict, List, Optional, Tuple
 
@@ -36,7 +36,7 @@ def get_default_env_params(task_id=0):
     #       camera_r1, camera_r2, camera_r3,
     #       light_spec_r, light_spec_g, light_spec_b,
     #   ]
-    # These starting params are derived from default libero-spatial; make sure 
+    # These starting params are derived from default libero-spatial; make sure
     # task_order_index=0 when loading benchmark_dict
     bowl_starting_xy = [
         [-0.05, 0.20, -0.18, 0.32],
@@ -156,7 +156,11 @@ class LiberoSpatialEval:
         self.repair_config = repair_config
         self._eval_stub = partial(
             OffScreenRenderEnv,
-            bddl_file_name=os.path.join(get_libero_path("bddl_files"), custom_task_suite.tasks[self.task_id].problem_folder, custom_task_suite.tasks[self.task_id].bddl_file),
+            bddl_file_name=os.path.join(
+                get_libero_path("bddl_files"),
+                custom_task_suite.tasks[self.task_id].problem_folder,
+                custom_task_suite.tasks[self.task_id].bddl_file,
+            ),
             repair_config=self.repair_config,
             **kwargs,
         )
