@@ -45,6 +45,9 @@ class WebsocketClientPolicy:
                     compression=None,
                     max_size=None,
                     additional_headers=headers,
+                    ping_interval=20,
+                    ping_timeout=60,
+                    open_timeout=None,
                     close_timeout=None,
                 )
                 metadata = unpackb(conn.recv())
