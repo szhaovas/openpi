@@ -7,10 +7,10 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from dask.distributed import Client
+from libero.libero.envs import OffScreenRenderEnv
 from numpy.typing import NDArray
 
 from libero.libero import benchmark, get_libero_path
-from libero.libero.envs import OffScreenRenderEnv
 from src.dataset_utils import Trajectory
 from src.measures import MeasureModel
 from src.vla_client.websocket_client_policy import WebsocketClientPolicy
@@ -153,15 +153,16 @@ class LiberoSpatialEval:
                     f"num_trials_per_sol={self.num_trials_per_sol} exceeds the number of workers {nworkers}"
                 )
 
-        self.repair_config = repair_config
+        task = custom_task_suite.tasks[self.task_id]
+        self.prompt = task.language
         self._eval_stub = partial(
             OffScreenRenderEnv,
             bddl_file_name=os.path.join(
                 get_libero_path("bddl_files"),
-                custom_task_suite.tasks[self.task_id].problem_folder,
-                custom_task_suite.tasks[self.task_id].bddl_file,
+                task.problem_folder,
+                task.bddl_file,
             ),
-            repair_config=self.repair_config,
+            repair_config=repair_config,
             **kwargs,
         )
 
@@ -229,6 +230,7 @@ class LiberoSpatialEval:
                     env_params=repaired_solution,
                     vla_server_uri=self.vla_server_uris[trial_id],
                     eval_stub=self._eval_stub,
+                    prompt=self.prompt,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
                     replan_steps=self.replan_steps,
@@ -248,6 +250,7 @@ class LiberoSpatialEval:
                     env_params=repaired_solution,
                     vla_server_uri=self.vla_server_uris[0],
                     eval_stub=self._eval_stub,
+                    prompt=self.prompt,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
                     replan_steps=self.replan_steps,
@@ -345,12 +348,12 @@ class LiberoSpatialEval:
         if self._dask_client is not None:
             repaired, futures = [], []
             for sol_id, sol in enumerate(solutions):
-                try:
-                    env = self._eval_stub(env_params=sol)
-                    env.reset()
-                except Exception as e:
-                    # Allow repair failure since we are not actually rolling it out
-                    logger.warning(e)
+                env = self._eval_stub(env_params=sol)
+                obs = env.reset()
+                if obs is None:
+                    logger.warning(
+                        "Failed to repair environment"
+                    )  # Allow repair failure since we are not actually rolling it out
 
                 rep = env.env.env_params.copy()
                 repaired.append(rep)
@@ -361,6 +364,7 @@ class LiberoSpatialEval:
                         env_params=rep,
                         vla_server_uri=self.vla_server_uris[sol_id],
                         eval_stub=self._eval_stub,
+                        prompt=self.prompt,
                         max_steps=self.max_steps,
                         num_steps_wait=self.num_steps_wait,
                         replan_steps=self.replan_steps,
@@ -374,12 +378,12 @@ class LiberoSpatialEval:
         else:
             repaired, trajectories = [], []
             for _, sol in enumerate(solutions):
-                try:
-                    env = self._eval_stub(env_params=sol)
-                    env.reset()
-                except Exception as e:
-                    # Allow repair failure since we are not actually rolling it out
-                    logger.warning(e)
+                env = self._eval_stub(env_params=sol)
+                obs = env.reset()
+                if obs is None:
+                    logger.warning(
+                        "Failed to repair environment"
+                    )  # Allow repair failure since we are not actually rolling it out
 
                 rep = env.env.env_params.copy()
                 repaired.append(rep)
@@ -388,6 +392,7 @@ class LiberoSpatialEval:
                     env_params=rep,
                     vla_server_uri=self.vla_server_uris[0],
                     eval_stub=self._eval_stub,
+                    prompt=self.prompt,
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
                     replan_steps=self.replan_steps,
@@ -402,6 +407,7 @@ def rollout(
     env_params: np.ndarray,
     vla_server_uri: str,
     eval_stub: partial,
+    prompt: str,
     max_steps: int,
     num_steps_wait: int,
     replan_steps: int,
@@ -414,6 +420,10 @@ def rollout(
         env_params (np.ndarray): Array of shape (solution_dim,) containing a single
             solution to be evaluated.
         eval_stub (partial): ``eval_stub(env_params)`` returns a Libero env.
+        prompt (str): Language instruction for the evaluated task. Libero
+            doesn't actually use env.language_instruction parsed from bddl
+            content, but task.language parsed from bddl filename, so we need to
+            pass this in separately.
         vla_server_uri (str): On which host ip and port should this rollout
             contact the VLA server. e.g. 0.0.0.0:8000
         max_steps (int): The maximum number of rollout steps before the task is
@@ -451,7 +461,7 @@ def rollout(
     vla_policy = WebsocketClientPolicy(ip, int(port))
 
     action_plan = collections.deque()
-    trajectory = Trajectory(prompt=env.language_instruction)
+    trajectory = Trajectory(prompt=prompt)
     for t in range(max_steps + num_steps_wait):
         if t < num_steps_wait:
             # Do nothing at the start to wait for env to settle
@@ -475,7 +485,7 @@ def rollout(
                 "observation/image": img,
                 "observation/wrist_image": wrist_img,
                 "observation/state": state,
-                "prompt": env.language_instruction,
+                "prompt": prompt,
             }
 
             inference_obj = vla_policy.infer(element)
