@@ -365,25 +365,22 @@ def redraw_heatmap_pca(
     return all_coverages[np.argsort(list(all_nevals.values()))]
 
 
-def tally_traj_by_task(
-    traj_dataset: TempDataset, max_traj_len: Optional[int] = None
-) -> Dict[str, List]:
+def tally_traj_by_task(traj_dataset: TempDataset) -> Dict[str, List]:
     traj_id_by_task = {
-        "pick the akita black bowl between the plate and the ramekin and place it on the plate": [],
-        "pick the akita black bowl next to the ramekin and place it on the plate": [],
-        "pick the akita black bowl from table center and place it on the plate": [],
-        "pick the akita black bowl on the cookies box and place it on the plate": [],
-        "pick the akita black bowl in the top layer of the wooden cabinet and place it on the plate": [],
-        "pick the akita black bowl on the ramekin and place it on the plate": [],
-        "pick the akita black bowl next to the cookies box and place it on the plate": [],
-        "pick the akita black bowl on the stove and place it on the plate": [],
-        "pick the akita black bowl next to the plate and place it on the plate": [],
-        "pick the akita black bowl on the wooden cabinet and place it on the plate": [],
+        "pick up the black bowl between the plate and the ramekin and place it on the plate": [],
+        "pick up the black bowl next to the ramekin and place it on the plate": [],
+        "pick up the black bowl from table center and place it on the plate": [],
+        "pick up the black bowl on the cookie box and place it on the plate": [],
+        "pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate": [],
+        "pick up the black bowl on the ramekin and place it on the plate": [],
+        "pick up the black bowl next to the cookie box and place it on the plate": [],
+        "pick up the black bowl on the stove and place it on the plate": [],
+        "pick up the black bowl next to the plate and place it on the plate": [],
+        "pick up the black bowl on the wooden cabinet and place it on the plate": [],
     }
     for traj_id, traj in enumerate(tqdm(traj_dataset)):
         assert traj.prompt is not None
-        if max_traj_len is None or len(traj.state) < max_traj_len:
-            traj_id_by_task[traj.prompt].append(traj_id)
+        traj_id_by_task[traj.prompt].append(traj_id)
 
     return traj_id_by_task
 
@@ -396,16 +393,16 @@ if __name__ == "__main__":
         env_archive = pkl.load(f)
 
         success_rates_on_envs(
-            env_archive, 
+            env_archive,
             [
-                '10.136.109.136:52800', # unicron 8000
+                "10.136.109.136:52800",  # unicron 8000
                 # '10.136.109.136:52801', # unicron 8001
-                '10.136.109.136:51800', # primus 8000
-                '10.136.109.136:51801', # primus 8001
-                '10.136.109.136:50800', # momo 8000
+                "10.136.109.136:51800",  # primus 8000
+                "10.136.109.136:51801",  # primus 8001
+                "10.136.109.136:50800",  # momo 8000
                 # '10.136.109.136:53800', # atlas 8000
             ],
-            "success_rates"
+            "success_rates",
         )
 
     # with open(

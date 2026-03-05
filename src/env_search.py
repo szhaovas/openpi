@@ -8,7 +8,7 @@ import shutil
 from functools import reduce
 from operator import add, mul
 from pathlib import Path
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 import hydra
 import matplotlib.pyplot as plt
@@ -16,7 +16,7 @@ import numpy as np
 from dask.distributed import Client, LocalCluster
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
-from ribs.archives import CVTArchive, GridArchive
+from ribs.archives import ArchiveBase, CVTArchive, GridArchive
 from ribs.visualize import cvt_archive_heatmap, grid_archive_heatmap
 from sklearn.metrics import pairwise_distances
 from sklearn.metrics.pairwise import rbf_kernel
@@ -50,6 +50,60 @@ def extract_scheduler_nevals(experiment_logdir: str) -> Dict[str, int]:
             result[filename] = int(match.group(1))
 
     return result
+
+
+def _delete_trajectories_after_idx(dataset: TempDataset, del_after: int):
+    """Deletes all trajectories in ``dataset`` whose indices >= ``del_after``."""
+    for idx in range(del_after, len(dataset)):
+        eps_dir = dataset.dataset_dir / f"ep_{idx:05d}"
+        shutil.rmtree(eps_dir)
+
+
+def _filter_succ_dataset(
+    env_archive: ArchiveBase,
+    succ_dataset: TempDataset,
+    filtered_dataset_path: Path,
+    max_traj_len: Optional[int] = None,
+) -> TempDataset:
+    """``succ_dataset`` may contain multiple rollout trajectories for each
+    environment stored in ``env_archive``, which can cause action divergence.
+    This function filters ``succ_dataset`` so that it contains only a single
+    shortest (which implies highest-quality) trajectory for each environment.
+
+    Args:
+        env_archive: A QD archive that contains environmental parameters found
+            by the env_search pipeline. It must also contain a ``succ_traj_idx``
+            extra field mapping each environment to some trajectories in
+            ``succ_dataset``.
+        succ_dataset: Rollout trajectory dataset containing successful
+            trajectories rolled out on ``env_archive`` environments.
+        filtered_dataset_path: The filtered dataset will be saved to this path.
+        max_traj_len: If specified, only trajectories shorter than this
+            threshold will be saved to the filtered dataset.
+
+    Returns:
+        filtered_succ_dataset
+    """
+    succ_traj_idx = env_archive.data("succ_traj_idx")
+    assert succ_traj_idx is not None
+
+    filtered_succ_dataset = TempDataset(dataset_dir=filtered_dataset_path)
+
+    for same_env_traj_idx in succ_traj_idx:
+        shortest_traj = None
+        min_len = np.inf
+        for traj_idx in same_env_traj_idx[same_env_traj_idx != -1]:
+            traj = succ_dataset[traj_idx]
+            if len(traj.state) < min_len:
+                shortest_traj = traj
+                min_len = len(traj.state)
+
+        if shortest_traj is not None and (
+            max_traj_len is None or min_len < max_traj_len
+        ):
+            filtered_succ_dataset.write_episode(trajectory=shortest_traj)
+
+    return filtered_succ_dataset
 
 
 def safe_pickle_dump(obj: Any, save_path: Path):
@@ -215,6 +269,9 @@ def main(cfg: DictConfig):
         summary_filename = logdir / "summary.csv"
         starting_nevals = 0
 
+        temp_succ_dataset = TempDataset(dataset_dir=logdir / "succ_dataset")
+        temp_fail_dataset = TempDataset(dataset_dir=logdir / "fail_dataset")
+
         # QD archive for QD visualization and metrics.
         # In the case of cma-mae, also provides x0 in case of restart.
         qd_archive = instantiate(
@@ -229,11 +286,11 @@ def main(cfg: DictConfig):
                     (cfg.eval.measure_model.model_cfg.input_dim,),
                     np.float32,
                 ),
-                "succ_traj_id": (
+                "succ_traj_idx": (
                     (cfg.eval.task_eval.num_trials_per_sol,),
                     np.int32,
                 ),  # for retrieving successful rollouts on each environment
-                "fail_traj_id": (
+                "fail_traj_idx": (
                     (cfg.eval.task_eval.num_trials_per_sol,),
                     np.int32,
                 ),  # for retrieving failed rollouts on each environment
@@ -254,11 +311,11 @@ def main(cfg: DictConfig):
                     (cfg.eval.measure_model.model_cfg.input_dim,),
                     np.float32,
                 ),
-                "succ_traj_id": (
+                "succ_traj_idx": (
                     (cfg.eval.task_eval.num_trials_per_sol,),
                     np.int32,
                 ),  # for retrieving successful rollouts on each environment
-                "fail_traj_id": (
+                "fail_traj_idx": (
                     (cfg.eval.task_eval.num_trials_per_sol,),
                     np.int32,
                 ),  # for retrieving failed rollouts on each environment
@@ -322,19 +379,42 @@ def main(cfg: DictConfig):
             extract_scheduler_nevals(cfg.reload_from_dir).values()
         )
 
+        temp_succ_dataset = TempDataset(dataset_dir=logdir / "succ_dataset")
+        temp_fail_dataset = TempDataset(dataset_dir=logdir / "fail_dataset")
+
         with open(
             file=logdir / f"scheduler_{starting_nevals:08d}.pkl",
             mode="rb",
         ) as f:
             scheduler = pkl.load(f)
 
+            # clean up orphan trajectories whose rollout environments are not
+            # stored in the latest checkpoint
+            latest_succ_dataset_idx = np.max(
+                scheduler.result_archive.data("succ_traj_idx")
+            )
+            logger.warning(
+                f"Envs in latest checkpoint map to successful trajectory idx up to {latest_succ_dataset_idx}, "
+                f"deleting orphan successful trajectories with idx >= {latest_succ_dataset_idx+1}..."
+            )
+            _delete_trajectories_after_idx(
+                temp_succ_dataset, latest_succ_dataset_idx + 1
+            )
+            latest_fail_dataset_idx = np.max(
+                scheduler.result_archive.data("fail_traj_idx")
+            )
+            logger.warning(
+                f"Envs in latest checkpoint map to failed trajectory idx up to {latest_fail_dataset_idx}, "
+                f"deleting orphan failed trajectories with idx >= {latest_fail_dataset_idx+1}..."
+            )
+            _delete_trajectories_after_idx(
+                temp_fail_dataset, latest_fail_dataset_idx + 1
+            )
+
         measure_model = instantiate(
             cfg.eval.measure_model,
             ckpt_path=logdir / "measure_ckpt.pt",
         )
-
-    temp_succ_dataset = TempDataset(dataset_dir=logdir / "succ_dataset")
-    temp_fail_dataset = TempDataset(dataset_dir=logdir / "fail_dataset")
 
     if cfg.single_process:
         client = None
@@ -373,8 +453,8 @@ def main(cfg: DictConfig):
                 all_measures,
                 all_task_id,
                 all_embedding,
-                all_succ_traj_id,
-                all_fail_traj_id,
+                all_succ_traj_idx,
+                all_fail_traj_idx,
             ) = ([], [], [], [], [], [], [])
             for eid, em in enumerate(scheduler.emitters):
                 # Each emitter emits batch_size solutions
@@ -410,11 +490,15 @@ def main(cfg: DictConfig):
                 # they come from a challenging yet feasible environment on
                 # which there are some successful and some failed rollouts
                 for env_rollouts in trajectories:
-                    succ_traj_id = np.full(
-                        cfg.eval.task_eval.num_trials_per_sol, np.nan
+                    succ_traj_idx = np.full(
+                        cfg.eval.task_eval.num_trials_per_sol,
+                        -1,
+                        dtype=np.int32,
                     )
-                    fail_traj_id = np.full(
-                        cfg.eval.task_eval.num_trials_per_sol, np.nan
+                    fail_traj_idx = np.full(
+                        cfg.eval.task_eval.num_trials_per_sol,
+                        -1,
+                        dtype=np.int32,
                     )
 
                     if np.any(
@@ -435,19 +519,19 @@ def main(cfg: DictConfig):
                                     )
                                 )
 
-                        succ_traj_id[: len(stid)] = stid
-                        fail_traj_id[: len(ftid)] = ftid
+                        succ_traj_idx[: len(stid)] = stid
+                        fail_traj_idx[: len(ftid)] = ftid
 
-                    all_succ_traj_id.append(succ_traj_id)
-                    all_fail_traj_id.append(fail_traj_id)
+                    all_succ_traj_idx.append(succ_traj_idx)
+                    all_fail_traj_idx.append(fail_traj_idx)
 
             all_repaired = np.array(all_repaired)
             all_objective = np.array(all_objective)
             all_measures = np.array(all_measures)
             all_task_id = np.array(all_task_id)
             all_embedding = np.array(all_embedding)
-            all_succ_traj_id = np.array(all_succ_traj_id)
-            all_fail_traj_id = np.array(all_fail_traj_id)
+            all_succ_traj_idx = np.array(all_succ_traj_idx)
+            all_fail_traj_idx = np.array(all_fail_traj_idx)
 
             edit_dists = np.linalg.norm(all_repaired - solutions, axis=1)
             # Solutions that have been modified by external repair are no longer
@@ -466,8 +550,8 @@ def main(cfg: DictConfig):
                 injected=injected,
                 task_id=all_task_id,
                 embedding=all_embedding,
-                succ_traj_id=all_succ_traj_id,
-                fail_traj_id=all_fail_traj_id,
+                succ_traj_idx=all_succ_traj_idx,
+                fail_traj_idx=all_fail_traj_idx,
             )
 
             # These metrics need to be computed over all historical results. Use logging_archive
@@ -476,16 +560,20 @@ def main(cfg: DictConfig):
             )
             feasible_env_idx = np.where(archive_data["objective"] > 1e-6)[0]
             num_feasible_envs = len(feasible_env_idx)
-            avg_emb_dist = np.mean(
-                pairwise_distances(
-                    X=archive_data["embedding"][feasible_env_idx],
-                    metric="euclidean",
+
+            if num_feasible_envs > 0:
+                avg_emb_dist = np.mean(
+                    pairwise_distances(
+                        X=archive_data["embedding"][feasible_env_idx],
+                        metric="euclidean",
+                    )
                 )
-            )
-            rbf_K = rbf_kernel(
-                X=archive_data["embedding"][feasible_env_idx], gamma=0.002
-            )  # gamma is chosen to match median embedding distance
-            emb_vendi = vendi.score_K(rbf_K, normalize=True)
+                rbf_K = rbf_kernel(
+                    X=archive_data["embedding"][feasible_env_idx], gamma=0.002
+                )  # gamma is chosen to match median embedding distance
+                emb_vendi = vendi.score_K(rbf_K, normalize=True)
+            else:
+                avg_emb_dist, emb_vendi = 0, 0
             emb_qvendi = np.mean(archive_data["objective"]) * emb_vendi
 
             # Use qd_archive for QD metrics
@@ -532,9 +620,12 @@ def main(cfg: DictConfig):
 
     # After qd loop finishes, exports all eligible trajectories to a lerobot
     # dataset
-    temp_succ_dataset.convert_to_lerobot(
-        cfg.lerobot_dataset_repo_id, max_traj_len=100
+    filtered_succ_dataset = _filter_succ_dataset(
+        env_archive=scheduler.result_archive,
+        succ_dataset=temp_succ_dataset,
+        filtered_dataset_path=logdir / "filtered_succ_dataset",
     )
+    filtered_succ_dataset.convert_to_lerobot(cfg.lerobot_dataset_repo_id)
 
 
 if __name__ == "__main__":

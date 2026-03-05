@@ -55,13 +55,10 @@ class Trajectory:
 
 class TempDataset(Dataset):
     def __init__(self, dataset_dir: Path) -> None:
-        self.dataset_dir = dataset_dir
-
-        if self.dataset_dir.is_dir():
-            self._num_eps = len(glob.glob(f"{self.dataset_dir}/ep_{'[0-9]'*5}"))
-        else:
+        if not dataset_dir.is_dir():
             dataset_dir.mkdir(parents=True)
-            self._num_eps = 0
+
+        self.dataset_dir = dataset_dir
 
     def __getitem__(self, idx: int) -> Trajectory:
         eps_dir = self.dataset_dir / f"ep_{idx:05d}"
@@ -100,17 +97,17 @@ class TempDataset(Dataset):
         )
 
     def __len__(self) -> int:
-        return self._num_eps
+        return len(glob.glob(f"{self.dataset_dir}/ep_{'[0-9]'*5}"))
 
     def __iter__(self) -> Iterator[Trajectory]:
-        for ep_idx in range(self._num_eps):
+        for ep_idx in range(len(self)):
             yield self[ep_idx]
 
     def write_episode(self, trajectory: Trajectory, fps: int = 10) -> None:
         if trajectory.prompt is None:
             logger.warning("Cannot write empty trajectory")
             return
-        
+
         traj_id = len(self)
         eps_dir = self.dataset_dir / f"ep_{traj_id:05d}"
         eps_dir.mkdir()
@@ -140,22 +137,15 @@ class TempDataset(Dataset):
             for img in trajectory.wrist_image:
                 writer.append_data(img)
 
-        self._num_eps += 1
-
         return traj_id
 
-    def convert_to_lerobot(
-        self, repo_id: str, max_traj_len: Optional[int] = None
-    ) -> LeRobotDataset:
+    def convert_to_lerobot(self, repo_id: str) -> LeRobotDataset:
         """Converts this dataset to LeRobot format suitable for openpi finetuning
 
         Args:
             repo_id: The repo ID that determines where the output dataset
                 will be saved. By default, the save location will be
                 ``HF_LEROBOT_HOME / repo_id``
-            max_traj_len: Only trajectories shorter than ``max_traj_len`` will
-                get exported. This is for filtering out low-quality successful
-                trajectories.
 
 
         Returns:
@@ -178,29 +168,28 @@ class TempDataset(Dataset):
         )
 
         for trajectory in tqdm(self):
-            if max_traj_len is None or len(trajectory.state) < max_traj_len:
-                with _suppress_tqdm():
-                    for image, wrist_image, state, action in zip(
-                        trajectory.image,
-                        trajectory.wrist_image,
-                        trajectory.state,
-                        trajectory.action,
-                    ):
-                        dataset.add_frame(
-                            frame={
-                                "image": image,
-                                "wrist_image": wrist_image,
-                                "state": state.astype(
-                                    lerobot_dataset_features["state"]["dtype"]
-                                ),
-                                "actions": action.astype(
-                                    lerobot_dataset_features["state"]["dtype"]
-                                ),
-                            },
-                            task=trajectory.prompt,
-                        )
+            with _suppress_tqdm():
+                for image, wrist_image, state, action in zip(
+                    trajectory.image,
+                    trajectory.wrist_image,
+                    trajectory.state,
+                    trajectory.action,
+                ):
+                    dataset.add_frame(
+                        frame={
+                            "image": image,
+                            "wrist_image": wrist_image,
+                            "state": state.astype(
+                                lerobot_dataset_features["state"]["dtype"]
+                            ),
+                            "actions": action.astype(
+                                lerobot_dataset_features["state"]["dtype"]
+                            ),
+                        },
+                        task=trajectory.prompt,
+                    )
 
-                    dataset.save_episode()
+                dataset.save_episode()
 
         print(f"Saved dataset to {HF_LEROBOT_HOME / repo_id}")
 
