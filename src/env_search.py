@@ -23,8 +23,15 @@ from sklearn.metrics.pairwise import rbf_kernel
 from tqdm import tqdm
 from vendi_score import vendi
 
-from src.dataset_utils import TempDataset
-from src.libero_spatial_eval import get_default_env_params
+from src.dataset_utils import (
+    TempDataset,
+    Trajectory,
+    filter_lerobot_dataset_by_task,
+)
+from src.libero_spatial_eval import (
+    get_default_env_params,
+    libero_spatial_prompts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +96,9 @@ def _filter_succ_dataset(
 
     filtered_succ_dataset = TempDataset(dataset_dir=filtered_dataset_path)
 
-    for same_env_traj_idx in succ_traj_idx:
+    for same_env_traj_idx in tqdm(
+        succ_traj_idx, desc="Filtering collected trajs"
+    ):
         shortest_traj = None
         min_len = np.inf
         for traj_idx in same_env_traj_idx[same_env_traj_idx != -1]:
@@ -444,7 +453,7 @@ def main(cfg: DictConfig):
         initial=starting_nevals,
         total=cfg.env_search_num_evals,
     ) as pbar:
-        while pbar.n <= pbar.total:
+        while pbar.n < pbar.total:
             solutions = scheduler.ask()
 
             (
@@ -618,14 +627,59 @@ def main(cfg: DictConfig):
                         scheduler.archive, logdir / f"heatmap_{pbar.n:08d}.png"
                     )
 
-    # After qd loop finishes, exports all eligible trajectories to a lerobot
-    # dataset
-    filtered_succ_dataset = _filter_succ_dataset(
+    # Exports finetune dataset after qd search finishes
+    # Filters out redundant and low-quality trajectories
+    logger.info("QD search done! Generating finetune dataset...")
+    finetune_dataset = _filter_succ_dataset(
         env_archive=scheduler.result_archive,
         succ_dataset=temp_succ_dataset,
-        filtered_dataset_path=logdir / "filtered_succ_dataset",
+        filtered_dataset_path=logdir / "finetune_dataset",
+        max_traj_len=110,
     )
-    filtered_succ_dataset.convert_to_lerobot(cfg.lerobot_dataset_repo_id)
+
+    # Adds some trajectories from the base libero dataset to prevent forgetting
+    filtered_lerobot_dataset = filter_lerobot_dataset_by_task(
+        repo_id="physical-intelligence/libero",
+        task_prompts=libero_spatial_prompts[cfg.eval.task_ids],
+    )
+    for traj_start, traj_end in tqdm(
+        zip(
+            filtered_lerobot_dataset.episode_data_index["from"].numpy(),
+            filtered_lerobot_dataset.episode_data_index["to"].numpy(),
+        ),
+        total=len(filtered_lerobot_dataset.episode_data_index["from"]),
+        desc="Adding base trajs",
+    ):
+        if np.random.rand() > cfg.proportion_of_base_data_to_mix:
+            continue
+
+        trajectory = Trajectory(
+            prompt=filtered_lerobot_dataset[int(traj_start)]["task"],
+            success=True,
+        )
+        for step_id in range(traj_start, traj_end):
+            trajectory.image.append(
+                np.transpose(
+                    filtered_lerobot_dataset[step_id]["image"].numpy() * 255,
+                    (1, 2, 0),
+                ).astype("uint8")
+            )
+            trajectory.wrist_image.append(
+                np.transpose(
+                    filtered_lerobot_dataset[step_id]["wrist_image"].numpy()
+                    * 255,
+                    (1, 2, 0),
+                ).astype("uint8")
+            )
+            trajectory.state.append(filtered_lerobot_dataset[step_id]["state"])
+            trajectory.action.append(
+                filtered_lerobot_dataset[step_id]["actions"]
+            )
+
+        finetune_dataset.write_episode(trajectory)
+
+    # Convert to finetuning format
+    finetune_dataset.convert_to_lerobot(cfg.output_dataset_id)
 
 
 if __name__ == "__main__":

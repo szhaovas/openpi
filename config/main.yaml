@@ -13,7 +13,8 @@ save_embeddings_to: ${hydra:runtime.output_dir}/embeddings
 
 # search_itr * emitter_batch_size * trials_per_sol
 env_search_num_evals: ${oc.mul:100, ${envgen.emitter.batch_size}, ${eval.task_eval.num_trials_per_sol}}
-lerobot_dataset_repo_id: ${hydra:runtime.choices.envgen}/${now:%Y-%m-%d_%H%M%S}
+proportion_of_base_data_to_mix: 0.2
+output_dataset_id: ${hydra:runtime.choices.envgen}/${now:%Y-%m-%d_%H%M%S}
 log_every: ${oc.mul:5, ${envgen.emitter.batch_size}, ${eval.task_eval.num_trials_per_sol}} # Log every 5 search iterations
 seed: 42
 

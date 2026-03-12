@@ -20,6 +20,21 @@ logger = logging.getLogger(__name__)
 benchmark_dict = benchmark.get_benchmark_dict()
 custom_task_suite = benchmark_dict["custom"]()
 
+libero_spatial_prompts = np.array(
+    [
+        "pick up the black bowl between the plate and the ramekin and place it on the plate",
+        "pick up the black bowl next to the ramekin and place it on the plate",
+        "pick up the black bowl from table center and place it on the plate",
+        "pick up the black bowl on the cookie box and place it on the plate",
+        "pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate",
+        "pick up the black bowl on the ramekin and place it on the plate",
+        "pick up the black bowl next to the cookie box and place it on the plate",
+        "pick up the black bowl on the stove and place it on the plate",
+        "pick up the black bowl next to the plate and place it on the plate",
+        "pick up the black bowl on the wooden cabinet and place it on the plate",
+    ]
+)
+
 
 def get_default_env_params(task_id=0):
     # For now ``env_params`` consists of:

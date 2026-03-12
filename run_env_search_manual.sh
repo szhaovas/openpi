@@ -15,7 +15,7 @@ VLA_SERVER_URIs=(
 ) # By default, the number of uris sets cfg.eval.task_eval.num_trials_per_sol
 
 # Check if session exists
-if tmux has-session -t "$EXP_NAME" 2>/dev/null; then
+if tmux has-session -t "=$EXP_NAME" 2>/dev/null; then
     echo "Session $EXP_NAME already exists. Attaching..."
     tmux attach-session -t "$EXP_NAME"
     exit 0

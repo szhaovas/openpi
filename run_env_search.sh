@@ -12,7 +12,7 @@ GPU_IDs=(0 0 1 1) # should have the same length as VLA_SERVER_URIs
 
 # Check if session exists
 session_name="${ALGO}-${VLA_TYPE}"
-if tmux has-session -t "$session_name" 2>/dev/null; then
+if tmux has-session -t "=$session_name" 2>/dev/null; then
     echo "Session $session_name already exists. Attaching..."
     tmux attach-session -t "$session_name"
     exit 0

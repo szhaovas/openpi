@@ -8,7 +8,11 @@ from typing import Dict, Iterable, Iterator, List, Optional
 import imageio
 import numpy as np
 import torch
-from lerobot.datasets.lerobot_dataset import HF_LEROBOT_HOME, LeRobotDataset
+from lerobot.datasets.lerobot_dataset import (
+    HF_LEROBOT_HOME,
+    LeRobotDataset,
+    LeRobotDatasetMetadata,
+)
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 from tqdm import tqdm
@@ -28,12 +32,12 @@ lerobot_dataset_features = {
         "names": ["height", "width", "channel"],
     },
     "state": {
-        "dtype": "float64",
+        "dtype": "float32",
         "shape": (8,),
         "names": ["state"],
     },
     "actions": {
-        "dtype": "float64",
+        "dtype": "float32",
         "shape": (7,),
         "names": ["actions"],
     },
@@ -66,7 +70,10 @@ class TempDataset(Dataset):
         state_action_embedding = np.load(eps_dir / "state_action_embedding.npz")
         state = state_action_embedding["state"]
         action = state_action_embedding["action"]
-        embedding = state_action_embedding["embedding"]
+        if "embedding" in state_action_embedding:
+            embedding = state_action_embedding["embedding"]
+        else:
+            embedding = []
 
         with open(eps_dir / "success.txt", "r", encoding="utf-8") as f:
             success = bool(f.read().rstrip("\n"))
@@ -245,3 +252,17 @@ def padded_embedding_collate(
         "padded_embeddings": padded_embeddings,
         "pre_pad_lengths": torch.tensor(pre_pad_lengths),
     }
+
+
+def filter_lerobot_dataset_by_task(
+    repo_id: str,
+    task_prompts: Iterable[str],
+) -> LeRobotDataset:
+    libero_metadata = LeRobotDatasetMetadata(repo_id)
+    filtered_eps_idx = [
+        eps_meta["episode_index"]
+        for eps_meta in libero_metadata.episodes.values()
+        if eps_meta["tasks"][0] in task_prompts
+    ]
+
+    return LeRobotDataset(repo_id, episodes=filtered_eps_idx)
