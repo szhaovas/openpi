@@ -1,12 +1,14 @@
 import contextlib
 import glob
 import logging
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional
 
 import imageio
 import numpy as np
+import tensorflow_datasets as tfds
 import torch
 from lerobot.datasets.lerobot_dataset import (
     HF_LEROBOT_HOME,
@@ -23,12 +25,12 @@ logger = logging.getLogger(__name__)
 lerobot_dataset_features = {
     "image": {
         "dtype": "image",
-        "shape": (256, 256, 3),
+        "shape": (224, 224, 3),
         "names": ["height", "width", "channel"],
     },
     "wrist_image": {
         "dtype": "image",
-        "shape": (256, 256, 3),
+        "shape": (224, 224, 3),
         "names": ["height", "width", "channel"],
     },
     "state": {
@@ -43,6 +45,73 @@ lerobot_dataset_features = {
     },
 }
 
+rlds_dataset_features = tfds.features.FeaturesDict(
+    {
+        "steps": tfds.features.Dataset(
+            {
+                "observation": tfds.features.FeaturesDict(
+                    {
+                        "image": tfds.features.Image(
+                            shape=(224, 224, 3),
+                            dtype=np.uint8,
+                            encoding_format="jpeg",
+                            doc="Main camera RGB observation.",
+                        ),
+                        "wrist_image": tfds.features.Image(
+                            shape=(224, 224, 3),
+                            dtype=np.uint8,
+                            encoding_format="jpeg",
+                            doc="Wrist camera RGB observation.",
+                        ),
+                        "state": tfds.features.Tensor(
+                            shape=(8,),
+                            dtype=np.float32,
+                            doc="Robot EEF state (6D pose, 2D gripper).",
+                        ),
+                        "joint_state": tfds.features.Tensor(
+                            shape=(7,),
+                            dtype=np.float32,
+                            doc="Robot joint angles.",
+                        ),
+                    }
+                ),
+                "action": tfds.features.Tensor(
+                    shape=(7,),
+                    dtype=np.float32,
+                    doc="Robot EEF action.",
+                ),
+                "discount": tfds.features.Scalar(
+                    dtype=np.float32, doc="Discount if provided, default to 1."
+                ),
+                "reward": tfds.features.Scalar(
+                    dtype=np.float32,
+                    doc="Reward if provided, 1 on final step for demos.",
+                ),
+                "is_first": tfds.features.Scalar(
+                    dtype=np.bool_, doc="True on first step of the episode."
+                ),
+                "is_last": tfds.features.Scalar(
+                    dtype=np.bool_, doc="True on last step of the episode."
+                ),
+                "is_terminal": tfds.features.Scalar(
+                    dtype=np.bool_,
+                    doc="True on last step of the episode if it is a terminal step, True for demos.",
+                ),
+                "language_instruction": tfds.features.Text(
+                    doc="Language Instruction."
+                ),
+            }
+        ),
+        "episode_metadata": tfds.features.FeaturesDict(
+            {
+                "file_path": tfds.features.Text(
+                    doc="Path to the original data file."
+                ),
+            }
+        ),
+    }
+)
+
 
 @dataclass
 class Trajectory:
@@ -53,6 +122,7 @@ class Trajectory:
     image: List[np.ndarray] = field(default_factory=list)
     wrist_image: List[np.ndarray] = field(default_factory=list)
     state: List[np.ndarray] = field(default_factory=list)
+    proprio: List[np.ndarray] = field(default_factory=list)
     action: List[np.ndarray] = field(default_factory=list)
     embedding: List[np.ndarray] = field(default_factory=list)
 
@@ -67,11 +137,14 @@ class TempDataset(Dataset):
     def __getitem__(self, idx: int) -> Trajectory:
         eps_dir = self.dataset_dir / f"ep_{idx:05d}"
 
-        state_action_embedding = np.load(eps_dir / "state_action_embedding.npz")
-        state = state_action_embedding["state"]
-        action = state_action_embedding["action"]
-        if "embedding" in state_action_embedding:
-            embedding = state_action_embedding["embedding"]
+        state_proprio_action_embedding = np.load(
+            eps_dir / "state_proprio_action_embedding.npz"
+        )
+        state = state_proprio_action_embedding["state"]
+        proprio = state_proprio_action_embedding["proprio"]
+        action = state_proprio_action_embedding["action"]
+        if "embedding" in state_proprio_action_embedding:
+            embedding = state_proprio_action_embedding["embedding"]
         else:
             embedding = []
 
@@ -99,6 +172,7 @@ class TempDataset(Dataset):
             image=image,
             wrist_image=wrist_image,
             state=state,
+            proprio=proprio,
             action=action,
             embedding=embedding,
         )
@@ -120,8 +194,9 @@ class TempDataset(Dataset):
         eps_dir.mkdir()
 
         np.savez(
-            eps_dir / "state_action_embedding.npz",
+            eps_dir / "state_proprio_action_embedding.npz",
             state=trajectory.state,
+            proprio=trajectory.proprio,
             action=trajectory.action,
             embedding=trajectory.embedding,
         )
@@ -198,12 +273,79 @@ class TempDataset(Dataset):
 
                 dataset.save_episode()
 
-        print(f"Saved dataset to {HF_LEROBOT_HOME / repo_id}")
+        logger.info(f"Saved dataset to {HF_LEROBOT_HOME / repo_id}")
 
         return dataset
 
-    def convert_to_rlds(self):
-        raise NotImplementedError
+    def convert_to_rlds(self, repo_id: str):
+        data_dir = Path(f"tensorflow_datasets/{repo_id}")
+        builder = LiberoRLDSBuilder(traj_dataset=self, data_dir=data_dir)
+        if Path(builder.data_dir).exists():
+            logger.warning(f"Overwriting previous {builder.data_dir}...")
+            shutil.rmtree(builder.data_dir)
+
+        builder.download_and_prepare()
+
+        logger.info(f"Saved dataset to {builder.data_dir}")
+
+        return builder.as_dataset(split="train")
+
+
+class LiberoRLDSBuilder(tfds.core.GeneratorBasedBuilder):
+    VERSION = tfds.core.Version("1.0.0")
+    RELEASE_NOTES = {
+        "1.0.0": "Initial release.",
+    }
+
+    def __init__(self, traj_dataset: TempDataset, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.traj_dataset = traj_dataset
+
+    def _info(self):
+        return tfds.core.DatasetInfo(
+            builder=self, features=rlds_dataset_features
+        )
+
+    def _split_generators(self, dl_manager: tfds.download.DownloadManager):
+        """Define data splits."""
+        return {
+            "train": self._generate_examples(),
+        }
+
+    def _generate_examples(self):
+        for traj_id, traj in enumerate(tqdm(self.traj_dataset)):
+            steps = []
+            for step_id in range(len(traj.action)):
+                is_last = step_id == (len(traj.action) - 1)
+                steps.append(
+                    {
+                        "observation": {
+                            "image": traj.image[
+                                step_id
+                            ],  # No need to flip here since we already flipped when collecting from libero
+                            "wrist_image": traj.wrist_image[
+                                step_id
+                            ],  # No need to flip here since we already flipped when collecting from libero
+                            "state": traj.state[step_id].astype(np.float32),
+                            "proprio": traj.proprio[step_id].astype(np.float32),
+                        },
+                        "action": traj.action[step_id].astype(np.float32),
+                        "discount": 1.0,
+                        "reward": float(
+                            is_last
+                        ),  # Assumes all trajectories in dataset are successful
+                        "is_first": step_id == 0,
+                        "is_last": is_last,
+                        "is_terminal": is_last,
+                        "language_instruction": traj.prompt,
+                    }
+                )
+            yield traj_id, {
+                "steps": steps,
+                "episode_metadata": {
+                    "file_path": "",  # Dummy, not actually used
+                },
+            }
 
 
 @contextlib.contextmanager

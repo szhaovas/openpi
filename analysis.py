@@ -45,8 +45,8 @@ def show_interactive_archive(
             num_trials_per_sol=len(vla_server_uris),
             vla_server_uris=vla_server_uris,
             dask_client=client,
-            camera_heights=256,
-            camera_widths=256,
+            camera_heights=224,
+            camera_widths=224,
             # replan_steps=1,  # Uncomment when no action chunking
             repair_config={"time_limit": 1500, "seed": 42},
         )
@@ -148,8 +148,8 @@ def host_interactive_archive(
             num_trials_per_sol=len(vla_server_uris),
             vla_server_uris=vla_server_uris,
             dask_client=client,
-            camera_heights=256,
-            camera_widths=256,
+            camera_heights=224,
+            camera_widths=224,
             # replan_steps=1,  # Uncomment when no action chunking
             repair_config={"time_limit": 1500, "seed": 42},
         )
@@ -229,8 +229,8 @@ def success_rates_on_envs(
             num_trials_per_sol=len(vla_server_uris),
             vla_server_uris=vla_server_uris,
             dask_client=client,
-            camera_heights=256,
-            camera_widths=256,
+            camera_heights=224,
+            camera_widths=224,
             # replan_steps=1,  # Uncomment when no action chunking
             repair_config={"time_limit": 1500, "seed": 42},
         )
@@ -387,7 +387,7 @@ def tally_traj_by_task(traj_dataset: TempDataset) -> Dict[str, List]:
 
 if __name__ == "__main__":
     with open(
-        file="test_envs.pkl",
+        file="results/cma_mae-openpi/embeddings/test_envs.pkl",
         mode="rb",
     ) as f:
         env_archive = pkl.load(f)
@@ -406,7 +406,7 @@ if __name__ == "__main__":
         )
 
     # with open(
-    #     file="dataset_3_success_rates/success_rates.pkl",
+    #     file="success_rates-base/success_rates.pkl",
     #     mode="rb",
     # ) as f:
     #     success_rates = pkl.load(f)
@@ -420,7 +420,11 @@ if __name__ == "__main__":
     #     env_counter = [0] * 10
     #     for cell in success_rates:
     #         task_id = cell["task_id"]
-    #         dummy_archive.add_single(solution=cell["solution"], objective=cell["objective"], measures=[task_id, env_counter[task_id]])
+    #         dummy_archive.add_single(
+    #             solution=cell["solution"],
+    #             objective=cell["objective"],
+    #             measures=[task_id, env_counter[task_id]],
+    #         )
     #         env_counter[task_id] += 1
 
     #     colors = np.full((32, 10), np.nan)
@@ -429,4 +433,4 @@ if __name__ == "__main__":
     #     grid_index_batch = dummy_archive.int_to_grid_index(index_batch)
     #     colors[grid_index_batch[:, 1], grid_index_batch[:, 0]] = objective_batch
 
-    #     print(np.mean(colors, axis=0))
+    #     print(np.mean(colors))

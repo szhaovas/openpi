@@ -459,6 +459,7 @@ def rollout(
                 "image": List,
                 "wrist_image": List,
                 "state": List,
+                "proprio": List,
                 "action": List,
                 "embedding": List
             }
@@ -500,6 +501,7 @@ def rollout(
                 "observation/image": img,
                 "observation/wrist_image": wrist_img,
                 "observation/state": state,
+                "observation/proprio": obs["robot0_joint_pos"],
                 "prompt": prompt,
             }
 
@@ -521,6 +523,7 @@ def rollout(
         trajectory.image.append(img)
         trajectory.wrist_image.append(wrist_img)
         trajectory.state.append(state)
+        trajectory.proprio.append(obs["robot0_joint_pos"])
         trajectory.action.append(action)
 
         obs, reward, done, info = env.step(action.tolist())

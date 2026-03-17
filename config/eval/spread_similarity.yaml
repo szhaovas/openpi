@@ -13,5 +13,5 @@ task_eval:
   repair_config:
     time_limit: 1500
     seed: ${seed}
-  camera_heights: 256
-  camera_widths: 256
+  camera_heights: 224
+  camera_widths: 224

@@ -3,6 +3,7 @@ import glob
 import logging
 import os
 import pickle as pkl
+import random
 import re
 import shutil
 from functools import reduce
@@ -13,6 +14,7 @@ from typing import Any, Dict, Optional, Union
 import hydra
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 from dask.distributed import Client, LocalCluster
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
@@ -34,6 +36,30 @@ from src.libero_spatial_eval import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _monkey_patch_pkl_load():
+    """Run this at the beginning of main if you see an error with
+    __generator_ctor expecting 1 argument when loading from a pkl checkpoint.
+    """
+    import importlib
+
+    mod = importlib.import_module("numpy.random._pickle")
+    orig = getattr(mod, "__generator_ctor", None)
+
+    def compat_generator_ctor(*args, **kwargs):
+        # Try to be permissive: if orig accepts the args, call it
+        try:
+            return orig(*args, **kwargs)
+        except TypeError:
+            # If orig expects a single arg (the more common case), call with first arg
+            if len(args) >= 1:
+                return orig(args[0])
+            # fallback: raise original error
+            raise
+
+    if orig is not None:
+        mod.__generator_ctor = compat_generator_ctor
 
 
 def extract_scheduler_nevals(experiment_logdir: str) -> Dict[str, int]:
@@ -173,11 +199,6 @@ def add_omegaconf_resolvers():
 
 
 def seed_everything(seed: int):
-    import random
-
-    import numpy as np
-    import torch
-
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -270,6 +291,7 @@ def collect_embeddings(colemb_cfg: DictConfig):
 def main(cfg: DictConfig):
     add_omegaconf_resolvers()
     seed_everything(cfg.seed)
+    # _monkey_patch_pkl_load()  # TODO: Remove when publishing
 
     if cfg.reload_from_dir is None:
         logdir = Path(
@@ -629,7 +651,7 @@ def main(cfg: DictConfig):
 
     # Exports finetune dataset after qd search finishes
     # Filters out redundant and low-quality trajectories
-    logger.info("QD search done! Generating finetune dataset...")
+    logger.info("Env search done! Generating finetune dataset...")
     finetune_dataset = _filter_succ_dataset(
         env_archive=scheduler.result_archive,
         succ_dataset=temp_succ_dataset,
@@ -661,14 +683,14 @@ def main(cfg: DictConfig):
             trajectory.image.append(
                 np.transpose(
                     filtered_lerobot_dataset[step_id]["image"].numpy() * 255,
-                    (1, 2, 0),
+                    (1, 2, 0),  # chw -> hwc
                 ).astype("uint8")
             )
             trajectory.wrist_image.append(
                 np.transpose(
                     filtered_lerobot_dataset[step_id]["wrist_image"].numpy()
                     * 255,
-                    (1, 2, 0),
+                    (1, 2, 0),  # chw -> hwc
                 ).astype("uint8")
             )
             trajectory.state.append(filtered_lerobot_dataset[step_id]["state"])
@@ -680,6 +702,7 @@ def main(cfg: DictConfig):
 
     # Convert to finetuning format
     finetune_dataset.convert_to_lerobot(cfg.output_dataset_id)
+    # finetune_dataset.convert_to_rlds(cfg.output_dataset_id)
 
 
 if __name__ == "__main__":
