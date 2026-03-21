@@ -693,16 +693,18 @@ def main(cfg: DictConfig):
                     (1, 2, 0),  # chw -> hwc
                 ).astype("uint8")
             )
-            trajectory.state.append(filtered_lerobot_dataset[step_id]["state"])
+            trajectory.state.append(
+                filtered_lerobot_dataset[step_id]["state"].numpy()
+            )
             trajectory.action.append(
-                filtered_lerobot_dataset[step_id]["actions"]
+                filtered_lerobot_dataset[step_id]["actions"].numpy()
             )
 
         finetune_dataset.write_episode(trajectory)
 
     # Convert to finetuning format
-    finetune_dataset.convert_to_lerobot(cfg.output_dataset_id)
-    # finetune_dataset.convert_to_rlds(cfg.output_dataset_id)
+    # finetune_dataset.convert_to_lerobot(cfg.output_dataset_id)
+    finetune_dataset.convert_to_rlds(cfg.output_dataset_id)
 
 
 if __name__ == "__main__":

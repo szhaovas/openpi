@@ -60,7 +60,7 @@ uv run visualization.py
 Terminal 2:
 ```bash
 cd openpi
-uv run scripts/serve_policy.py --env LIBERO policy:checkpoint --policy.config pi0_fast_libero_low_mem_finetune --policy.dir <your_finetuned_checkpoint>
+XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES=0 uv run scripts/serve_policy.py --env LIBERO --port 8000 policy:checkpoint --policy.config pi0_fast_libero_cma_mae --policy.dir <your_finetuned_checkpoint>
 ```
 <!-- CUDA_VISIBLE_DEVICES=1 uv run scripts/serve_policy.py --env LIBERO --port 8001 policy:checkpoint --policy.config pi0_fast_libero_cma_mae --policy.dir checkpoints/pi0_fast_libero_envgen/cma_mae/29999 -->
 

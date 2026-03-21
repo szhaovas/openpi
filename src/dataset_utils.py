@@ -4,20 +4,22 @@ import logging
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional
+from typing import Dict, Iterable, Iterator, List, Optional, no_type_check
 
 import imageio
 import numpy as np
-import tensorflow_datasets as tfds
 import torch
 from lerobot.datasets.lerobot_dataset import (
     HF_LEROBOT_HOME,
     LeRobotDataset,
     LeRobotDatasetMetadata,
 )
+from PIL import Image
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 from tqdm import tqdm
+
+import tensorflow_datasets as tfds
 
 logger = logging.getLogger(__name__)
 
@@ -259,8 +261,24 @@ class TempDataset(Dataset):
                 ):
                     dataset.add_frame(
                         frame={
-                            "image": image,
-                            "wrist_image": wrist_image,
+                            "image": resize_with_pad(
+                                image,
+                                height=lerobot_dataset_features["image"][
+                                    "shape"
+                                ][0],
+                                width=lerobot_dataset_features["image"][
+                                    "shape"
+                                ][1],
+                            ),
+                            "wrist_image": resize_with_pad(
+                                wrist_image,
+                                height=lerobot_dataset_features["wrist_image"][
+                                    "shape"
+                                ][0],
+                                width=lerobot_dataset_features["wrist_image"][
+                                    "shape"
+                                ][1],
+                            ),
                             "state": state.astype(
                                 lerobot_dataset_features["state"]["dtype"]
                             ),
@@ -312,24 +330,58 @@ class LiberoRLDSBuilder(tfds.core.GeneratorBasedBuilder):
             "train": self._generate_examples(),
         }
 
+    @no_type_check  # suppress pylance false positives on rlds_dataset_features.__getitem__
     def _generate_examples(self):
-        for traj_id, traj in enumerate(tqdm(self.traj_dataset)):
+        num_noops = 0
+        for traj_id, trajectory in enumerate(tqdm(self.traj_dataset)):
             steps = []
-            for step_id in range(len(traj.action)):
-                is_last = step_id == (len(traj.action) - 1)
+            for step_id, (
+                image,
+                wrist_image,
+                state,
+                proprio,
+                action,
+            ) in enumerate(
+                zip(
+                    trajectory.image,
+                    trajectory.wrist_image,
+                    trajectory.state,
+                    trajectory.proprio,
+                    trajectory.action,
+                )
+            ):
+                # filter out no-ops
+                prev_action = steps[-1]["action"] if len(steps) > 0 else None
+                if is_noop(action, prev_action):
+                    continue
+
+                is_last = step_id == (len(trajectory.action) - 1)
+
                 steps.append(
                     {
                         "observation": {
-                            "image": traj.image[
-                                step_id
-                            ],  # No need to flip here since we already flipped when collecting from libero
-                            "wrist_image": traj.wrist_image[
-                                step_id
-                            ],  # No need to flip here since we already flipped when collecting from libero
-                            "state": traj.state[step_id].astype(np.float32),
-                            "proprio": traj.proprio[step_id].astype(np.float32),
+                            "image": resize_with_pad(
+                                image,
+                                height=rlds_dataset_features["steps"][
+                                    "observation"
+                                ]["image"].shape[0],
+                                width=rlds_dataset_features["steps"][
+                                    "observation"
+                                ]["image"].shape[1],
+                            ),  # No need to flip here since we already flipped when collecting from libero
+                            "wrist_image": resize_with_pad(
+                                wrist_image,
+                                height=rlds_dataset_features["steps"][
+                                    "observation"
+                                ]["wrist_image"].shape[0],
+                                width=rlds_dataset_features["steps"][
+                                    "observation"
+                                ]["wrist_image"].shape[1],
+                            ),  # No need to flip here since we already flipped when collecting from libero
+                            "state": state.astype(np.float32),
+                            "joint_state": proprio.astype(np.float32),
                         },
-                        "action": traj.action[step_id].astype(np.float32),
+                        "action": action.astype(np.float32),
                         "discount": 1.0,
                         "reward": float(
                             is_last
@@ -337,7 +389,7 @@ class LiberoRLDSBuilder(tfds.core.GeneratorBasedBuilder):
                         "is_first": step_id == 0,
                         "is_last": is_last,
                         "is_terminal": is_last,
-                        "language_instruction": traj.prompt,
+                        "language_instruction": trajectory.prompt,
                     }
                 )
             yield traj_id, {
@@ -346,6 +398,8 @@ class LiberoRLDSBuilder(tfds.core.GeneratorBasedBuilder):
                     "file_path": "",  # Dummy, not actually used
                 },
             }
+
+        logger.info(f"Filtered out {num_noops} steps with near-zero actions")
 
 
 @contextlib.contextmanager
@@ -408,3 +462,92 @@ def filter_lerobot_dataset_by_task(
     ]
 
     return LeRobotDataset(repo_id, episodes=filtered_eps_idx)
+
+
+def is_noop(action, prev_action=None, threshold=1e-4):
+    """
+    Returns whether an action is a no-op action.
+
+    A no-op action satisfies two criteria:
+        (1) All action dimensions, except for the last one (gripper action), are near zero.
+        (2) The gripper action is equal to the previous timestep's gripper action.
+
+    Explanation of (2):
+        Naively filtering out actions with just criterion (1) is not good because you will
+        remove actions where the robot is staying still but opening/closing its gripper.
+        So you also need to consider the current state (by checking the previous timestep's
+        gripper action as a proxy) to determine whether the action really is a no-op.
+    """
+    # Special case: Previous action is None if this is the first action in the episode
+    # Then we only care about criterion (1)
+    if prev_action is None:
+        return np.linalg.norm(action[:-1]) < threshold
+
+    # Normal case: Check both criteria (1) and (2)
+    gripper_action = action[-1]
+    prev_gripper_action = prev_action[-1]
+    return (
+        np.linalg.norm(action[:-1]) < threshold
+        and gripper_action == prev_gripper_action
+    )
+
+
+def resize_with_pad(
+    images: np.ndarray, height: int, width: int, method=Image.BILINEAR
+) -> np.ndarray:
+    """Replicates tf.image.resize_with_pad for multiple images using PIL. Resizes a batch of images to a target height.
+
+    Args:
+        images: A batch of images in [..., height, width, channel] format.
+        height: The target height of the image.
+        width: The target width of the image.
+        method: The interpolation method to use. Default is bilinear.
+
+    Returns:
+        The resized images in [..., height, width, channel].
+    """
+    # If the images are already the correct size, return them as is.
+    if images.shape[-3:-1] == (height, width):
+        return images
+
+    original_shape = images.shape
+
+    images = images.reshape(-1, *original_shape[-3:])
+    resized = np.stack(
+        [
+            _resize_with_pad_pil(
+                Image.fromarray(im), height, width, method=method
+            )
+            for im in images
+        ]
+    )
+    return resized.reshape(*original_shape[:-3], *resized.shape[-3:])
+
+
+def _resize_with_pad_pil(
+    image: Image.Image, height: int, width: int, method: int
+) -> Image.Image:
+    """Replicates tf.image.resize_with_pad for one image using PIL. Resizes an image to a target height and
+    width without distortion by padding with zeros.
+
+    Unlike the jax version, note that PIL uses [width, height, channel] ordering instead of [batch, h, w, c].
+    """
+    cur_width, cur_height = image.size
+    if cur_width == width and cur_height == height:
+        return (
+            image  # No need to resize if the image is already the correct size.
+        )
+
+    ratio = max(cur_width / width, cur_height / height)
+    resized_height = int(cur_height / ratio)
+    resized_width = int(cur_width / ratio)
+    resized_image = image.resize(
+        (resized_width, resized_height), resample=method
+    )
+
+    zero_image = Image.new(resized_image.mode, (width, height), 0)
+    pad_height = max(0, int((height - resized_height) / 2))
+    pad_width = max(0, int((width - resized_width) / 2))
+    zero_image.paste(resized_image, (pad_width, pad_height))
+    assert zero_image.size == (width, height)
+    return zero_image

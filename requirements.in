@@ -24,3 +24,5 @@ future==0.18.2
 cloudpickle
 gym==0.25.2
 websockets
+tensorflow
+tensorflow-datasets
