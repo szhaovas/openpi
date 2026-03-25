@@ -183,7 +183,9 @@ class LiberoSpatialEval:
 
     def evaluate_single(
         self, solution: np.ndarray
-    ) -> Tuple[np.ndarray, float, NDArray[np.floating], List[Trajectory]]:
+    ) -> Tuple[
+        np.ndarray, float, NDArray[np.floating], List[Trajectory], np.floating
+    ]:
         """Evaluates a single solution by creating a LIBERO env from it and
         doing VLA rollout for :attr:`num_trials_per_sol` times. If
         :attr:`dask_client` is set, the rollouts will be parallelized. If
@@ -214,6 +216,9 @@ class LiberoSpatialEval:
                 :attr:`measure_func` is not set.
             trajectories (List[Trajectory]): Array of shape (ntrials,)
                 containing all rollout trajectories.
+            edit_dist (float): The Euclidean distance between the original and
+                repaired solutions. If no repair was done edit_dist defaults to
+                0.
         """
         env = self._eval_stub(env_params=solution)
         obs = env.reset()
@@ -223,15 +228,17 @@ class LiberoSpatialEval:
             logger.warning(
                 "Failed to repair environment, skipping evaluation..."
             )
-            # TODO: How to represent a solution that cannot be repaired
+            # Dummy feedbacks; we later filter out obj<0 so what we return
+            # doesn't matter.
             return (
                 solution.copy(),
-                0,
-                np.random.rand(1),
+                -1,
+                np.array([0]),
                 [
                     Trajectory(success=False)
                     for _ in range(self.num_trials_per_sol)
                 ],
+                0,
             )
 
         spread, similarity = env.env.compute_spread_similarity()
@@ -300,12 +307,21 @@ class LiberoSpatialEval:
         else:
             raise RuntimeError
 
-        return repaired_solution, objective, measures, trajectories
+        return (
+            repaired_solution,
+            objective,
+            measures,
+            trajectories,
+            np.linalg.norm(repaired_solution - solution),
+        )
 
     def evaluate(
         self, solutions: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[List[Trajectory]]]:
-        """Wrapper for :meth:`evaluate_single`.
+    ) -> Tuple[
+        np.ndarray, np.ndarray, np.ndarray, List[List[Trajectory]], np.ndarray
+    ]:
+        """Wrapper for :meth:`evaluate_single`. If a solution failed to evaluate,
+        its feedbacks (objective, measures etc.) are excluded from the batch.
 
         Args:
             solutions (np.ndarray): Array of shape (batch_size, solution_dim)
@@ -318,16 +334,24 @@ class LiberoSpatialEval:
             measures (np.ndarray): Measures array of shape (batch_size, 2).
             trajectories (List[List[Trajectory]]): Trajectories array of shape
                 (batch_size, ntrials).
+            edit_dist (np.ndarray): The Euclidean distance between each solution
+                in batch and its repaired version.
         """
         batch_size = solutions.shape[0]
 
-        repaired, objective, measures, trajectories = [], [], [], []
+        repaired, objective, measures, trajectories, edit_dist = (
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
         for sol_id, sol in enumerate(solutions):
             logger.info(
                 f"------------------- Evaluating solution {sol_id + 1}/{batch_size} (task_id: {self.task_id})"
             )
 
-            rep, obj, meas, traj = self.evaluate_single(sol)
+            rep, obj, meas, traj, ed = self.evaluate_single(sol)
 
             trial_success = [
                 f"trial{tid}: {'success' if tr.success else 'fail'}"
@@ -336,16 +360,21 @@ class LiberoSpatialEval:
             logger.info(f"\n{trial_success}")
             logger.info(f"\n\t objective: {obj}\n\t measures: {meas}")
 
-            repaired.append(rep)
-            objective.append(obj)
-            measures.append(meas)
-            trajectories.append(traj)
+            if obj >= 0:
+                # obj = -1 means solution failed to evaluate; do not include
+                # its feedbacks
+                repaired.append(rep)
+                objective.append(obj)
+                measures.append(meas)
+                trajectories.append(traj)
+                edit_dist.append(ed)
 
         return (
             np.array(repaired),
             np.array(objective),
             np.array(measures),
             trajectories,
+            np.array(edit_dist),
         )
 
     # TODO: clean this up

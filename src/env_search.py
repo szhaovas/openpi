@@ -265,7 +265,7 @@ def collect_embeddings(colemb_cfg: DictConfig):
                 ].get_single_trajectories(
                     solutions=solutions[sol_start:sol_end]
                 )
-                pbar.update(len(trajectories))
+                pbar.update(colemb_cfg.envgen.emitter.batch_size)
                 pbar.refresh()
 
                 all_task_id += [
@@ -486,22 +486,28 @@ def main(cfg: DictConfig):
                 all_embedding,
                 all_succ_traj_idx,
                 all_fail_traj_idx,
-            ) = ([], [], [], [], [], [], [])
+                all_num_feedbacks,
+            ) = ([], [], [], [], [], [], [], [])
             for eid, em in enumerate(scheduler.emitters):
                 # Each emitter emits batch_size solutions
                 sol_start = eid * cfg.envgen.emitter.batch_size
                 sol_end = sol_start + cfg.envgen.emitter.batch_size
-                repaired, objective, measures, trajectories = evaluators[
-                    em.task_id
-                ].evaluate(solutions=solutions[sol_start:sol_end])
-                pbar.update(len(trajectories))
+                repaired, objective, measures, trajectories, edit_dist = (
+                    evaluators[em.task_id].evaluate(
+                        solutions=solutions[sol_start:sol_end]
+                    )
+                )
+                pbar.update(cfg.envgen.emitter.batch_size)
                 pbar.refresh()
-                nevals_since_last_log += len(trajectories)
+                nevals_since_last_log += cfg.envgen.emitter.batch_size
 
                 all_repaired.extend(repaired)
                 all_objective.extend(objective)
                 all_measures.extend(measures)
-                all_task_id += [em.task_id] * cfg.envgen.emitter.batch_size
+
+                num_feedback = len(repaired)
+                all_task_id += [em.task_id] * num_feedback
+                all_num_feedbacks.append(num_feedback)
 
                 for env_rollouts in trajectories:
                     all_embedding.append(
@@ -522,12 +528,12 @@ def main(cfg: DictConfig):
                 # which there are some successful and some failed rollouts
                 for env_rollouts in trajectories:
                     succ_traj_idx = np.full(
-                        cfg.eval.task_eval.num_trials_per_sol,
+                        cfg.envgen.emitter.batch_size,
                         -1,
                         dtype=np.int32,
                     )
                     fail_traj_idx = np.full(
-                        cfg.eval.task_eval.num_trials_per_sol,
+                        cfg.envgen.emitter.batch_size,
                         -1,
                         dtype=np.int32,
                     )
@@ -564,18 +570,17 @@ def main(cfg: DictConfig):
             all_succ_traj_idx = np.array(all_succ_traj_idx)
             all_fail_traj_idx = np.array(all_fail_traj_idx)
 
-            edit_dists = np.linalg.norm(all_repaired - solutions, axis=1)
             # Solutions that have been modified by external repair are no longer
             # strictly emitted by CMA-ES and are injected into its update.
-            injected = edit_dists > 0
+            injected = edit_dist > 0
             logger.info(
                 f"{np.sum(injected)}/{injected.shape[0]} solutions have been modified by external repair"
             )
-            logger.info(f"\nedit_dists={edit_dists}")
+            logger.info(f"\nedit_dists={edit_dist}")
 
             scheduler.tell(
                 # Penalize objective with MILP editing distance if there is any
-                np.clip(all_objective - edit_dists, a_min=1e-6, a_max=None),
+                np.clip(all_objective - edit_dist, a_min=1e-6, a_max=None),
                 all_measures,
                 solution=all_repaired,
                 injected=injected,
@@ -583,6 +588,7 @@ def main(cfg: DictConfig):
                 embedding=all_embedding,
                 succ_traj_idx=all_succ_traj_idx,
                 fail_traj_idx=all_fail_traj_idx,
+                num_feedbacks=all_num_feedbacks,
             )
 
             # These metrics need to be computed over all historical results. Use logging_archive
@@ -703,8 +709,16 @@ def main(cfg: DictConfig):
         finetune_dataset.write_episode(trajectory)
 
     # Convert to finetuning format
-    # finetune_dataset.convert_to_lerobot(cfg.output_dataset_id)
-    finetune_dataset.convert_to_rlds(cfg.output_dataset_id)
+    vla_type = os.environ["VLA_TYPE"]
+    if vla_type == "openpi":
+        finetune_dataset.convert_to_lerobot(cfg.output_dataset_id)
+    elif vla_type == "openvla":
+        finetune_dataset.convert_to_rlds(cfg.output_dataset_id)
+    else:
+        logger.warning(
+            f"Unknown VLA_TYPE={vla_type} so no dataset was exported. You can "
+            f"view and manually export the temporary dataset at {logdir / 'finetune_dataset'}"
+        )
 
 
 if __name__ == "__main__":

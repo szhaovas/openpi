@@ -26,10 +26,29 @@ class BanditSchedulerExternal(BanditScheduler):
 
     def _validate_tell_data(self, data):
         """No longer sets data['solution'] to :attr:`_cur_solutions` because
-        this scheduler needs to receive repaired solutions."""
-        for name, arr in data.items():
+        this scheduler needs to receive repaired solutions.
+
+        Also no longer checks length against :attr:`_cur_solutions` since the
+        number of feedbacks may not be the same as ``len(self._cur_solutions)``.
+        For example, this can happen when some emitted solutions failed to
+        evaluate. Instead, we simply check that all tell data items have the
+        same batch size.
+        """
+        ref_name, ref_batch_size = None, None
+        for i, (name, arr) in enumerate(data.items()):
             data[name] = np.asarray(arr)
-            self._check_length(name, arr)
+
+            if i == 0:
+                ref_name = name
+                ref_batch_size = len(arr)
+                if ref_batch_size == 0:
+                    return None
+
+            if len(arr) != ref_batch_size:
+                raise ValueError(
+                    f"{ref_name} and {name} have different lengths "
+                    f"{ref_batch_size} and {len(arr)}"
+                )
 
         return data
 
@@ -44,9 +63,16 @@ class BanditSchedulerExternal(BanditScheduler):
                 "solution": fields["solution"],
                 "objective": objective,
                 "measures": measures,
-                **{k: v for k, v in fields.items() if k != "injected"},
+                **{
+                    k: v
+                    for k, v in fields.items()
+                    if k not in ["injected", "num_feedbacks"]
+                },
             }
         )
+
+        if data is None:
+            return
 
         archive_empty_before = self.archive.empty
         if self._result_archive is not None:
@@ -72,6 +98,10 @@ class BanditSchedulerExternal(BanditScheduler):
 
         assert "injected" in fields
         data["injected"] = fields["injected"]
+
+        if "num_feedbacks" in fields:
+            assert len(fields["num_feedbacks"]) == len(self._num_emitted)
+            self._num_emitted = fields["num_feedbacks"]
 
         # Keep track of pos because emitters may have different batch sizes.
         pos = 0

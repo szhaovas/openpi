@@ -15,6 +15,7 @@ from lerobot.datasets.lerobot_dataset import (
     LeRobotDatasetMetadata,
 )
 from PIL import Image
+from tensorflow_datasets.core.utils.file_utils import get_default_data_dir
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 from tqdm import tqdm
@@ -296,7 +297,7 @@ class TempDataset(Dataset):
         return dataset
 
     def convert_to_rlds(self, repo_id: str):
-        data_dir = Path(f"tensorflow_datasets/{repo_id}")
+        data_dir = Path(get_default_data_dir()) / repo_id
         builder = LiberoRLDSBuilder(traj_dataset=self, data_dir=data_dir)
         if Path(builder.data_dir).exists():
             logger.warning(f"Overwriting previous {builder.data_dir}...")

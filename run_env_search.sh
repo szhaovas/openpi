@@ -26,13 +26,15 @@ case "$VLA_TYPE" in
     openpi)
         tmux send-keys -t $session_name "
         export VLA_SERVER_URIs="$(IFS=,; echo "${VLA_SERVER_URIs[*]}")"
-        uv run -m src.env_search envgen=$ALGO eval.measure_model.model_cfg.input_dim=2048
+        export VLA_TYPE="$VLA_TYPE"
+        MUJOCO_GL=osmesa uv run -m src.env_search envgen=$ALGO eval.measure_model.model_cfg.input_dim=2048
         " C-m
         ;;
     openvla)
         tmux send-keys -t $session_name "
         export VLA_SERVER_URIs="$(IFS=,; echo "${VLA_SERVER_URIs[*]}")"
-        uv run -m src.env_search envgen=$ALGO eval.measure_model.model_cfg.input_dim=4096
+        export VLA_TYPE="$VLA_TYPE"
+        MUJOCO_GL=osmesa uv run -m src.env_search envgen=$ALGO eval.measure_model.model_cfg.input_dim=4096
         " C-m
         ;;
     *)
