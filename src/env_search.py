@@ -528,12 +528,12 @@ def main(cfg: DictConfig):
                 # which there are some successful and some failed rollouts
                 for env_rollouts in trajectories:
                     succ_traj_idx = np.full(
-                        cfg.envgen.emitter.batch_size,
+                        cfg.eval.task_eval.num_trials_per_sol,
                         -1,
                         dtype=np.int32,
                     )
                     fail_traj_idx = np.full(
-                        cfg.envgen.emitter.batch_size,
+                        cfg.eval.task_eval.num_trials_per_sol,
                         -1,
                         dtype=np.int32,
                     )
