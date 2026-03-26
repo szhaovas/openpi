@@ -1,11 +1,13 @@
 import csv
 import glob
+import importlib
 import logging
 import os
 import pickle as pkl
 import random
 import re
 import shutil
+from contextlib import contextmanager
 from functools import reduce
 from operator import add, mul
 from pathlib import Path
@@ -38,12 +40,11 @@ from src.libero_spatial_eval import (
 logger = logging.getLogger(__name__)
 
 
+@contextmanager
 def _monkey_patch_pkl_load():
-    """Run this at the beginning of main if you see an error with
+    """Run pickle.load within this context if you see an error with
     __generator_ctor expecting 1 argument when loading from a pkl checkpoint.
     """
-    import importlib
-
     mod = importlib.import_module("numpy.random._pickle")
     orig = getattr(mod, "__generator_ctor", None)
 
@@ -60,6 +61,11 @@ def _monkey_patch_pkl_load():
 
     if orig is not None:
         mod.__generator_ctor = compat_generator_ctor
+
+    try:
+        yield
+    finally:
+        mod.__generator_ctor = orig
 
 
 def extract_scheduler_nevals(experiment_logdir: str) -> Dict[str, int]:
@@ -291,7 +297,6 @@ def collect_embeddings(colemb_cfg: DictConfig):
 def main(cfg: DictConfig):
     add_omegaconf_resolvers()
     seed_everything(cfg.seed)
-    # _monkey_patch_pkl_load()  # TODO: Remove when publishing
 
     if cfg.reload_from_dir is None:
         logdir = Path(
@@ -417,7 +422,8 @@ def main(cfg: DictConfig):
             file=logdir / f"scheduler_{starting_nevals:08d}.pkl",
             mode="rb",
         ) as f:
-            scheduler = pkl.load(f)
+            with _monkey_patch_pkl_load():
+                scheduler = pkl.load(f)
 
             # clean up orphan trajectories whose rollout environments are not
             # stored in the latest checkpoint

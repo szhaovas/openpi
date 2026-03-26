@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from src.dataset_utils import TempDataset
 from src.env_search import (
+    _monkey_patch_pkl_load,
     extract_scheduler_nevals,
     safe_pickle_dump,
     save_heatmap,
@@ -64,7 +65,7 @@ def show_interactive_archive(
             print(
                 f"Recorded objective: {data['objective']}; Recorded measures: {data['measures']}"
             )
-            _, objective, _, trajectories = evaluators[
+            _, objective, _, trajectories, _ = evaluators[
                 data["task_id"]
             ].evaluate_single(solution=data["solution"])
             print(f"Evaluated success rate: {objective}")
@@ -187,7 +188,7 @@ def host_interactive_archive(
             print(
                 f"Recorded objective: {data['objective']}; Recorded measures: {data['measures']}"
             )
-            _, objective, _, trajectories = evaluators[
+            _, objective, _, trajectories, _ = evaluators[
                 data["task_id"]
             ].evaluate_single(solution=data["solution"])
             print(f"Evaluated success rate: {objective}")
@@ -253,7 +254,7 @@ def success_rates_on_envs(
 
         rollout_dataset = TempDataset(dataset_dir=logpath / f"env{env_id}")
 
-        _, objective, _, trajectories = evaluators[task_id].evaluate_single(
+        _, objective, _, trajectories, _ = evaluators[task_id].evaluate_single(
             solution=cell["solution"]
         )
 
@@ -390,7 +391,8 @@ if __name__ == "__main__":
         file="results/cma_mae-openpi/embeddings/test_envs.pkl",
         mode="rb",
     ) as f:
-        env_archive = pkl.load(f)
+        with _monkey_patch_pkl_load():
+            env_archive = pkl.load(f)
 
         success_rates_on_envs(
             env_archive,
@@ -409,7 +411,8 @@ if __name__ == "__main__":
     #     file="success_rates-base/success_rates.pkl",
     #     mode="rb",
     # ) as f:
-    #     success_rates = pkl.load(f)
+    #     with _monkey_patch_pkl_load():
+    #         success_rates = pkl.load(f)
 
     #     dummy_archive = GridArchive(
     #         solution_dim=success_rates.solution_dim,
@@ -433,4 +436,4 @@ if __name__ == "__main__":
     #     grid_index_batch = dummy_archive.int_to_grid_index(index_batch)
     #     colors[grid_index_batch[:, 1], grid_index_batch[:, 0]] = objective_batch
 
-    #     print(np.mean(colors))
+    #     print(np.mean(colors, axis=0))
