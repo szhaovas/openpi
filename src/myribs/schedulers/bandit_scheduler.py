@@ -101,7 +101,9 @@ class BanditSchedulerExternal(BanditScheduler):
 
         if "num_feedbacks" in fields:
             assert len(fields["num_feedbacks"]) == len(self.emitters)
-            self._num_emitted = fields["num_feedbacks"]
+            self._num_emitted[np.where(self._active_arr)] = fields[
+                "num_feedbacks"
+            ]
 
         # Keep track of pos because emitters may have different batch sizes.
         pos = 0
