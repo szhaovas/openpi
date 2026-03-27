@@ -144,7 +144,7 @@ class SchedulerExternal(Scheduler):
         data["injected"] = fields["injected"]
 
         if "num_feedbacks" in fields:
-            assert len(fields["num_feedbacks"]) == len(self._num_emitted)
+            assert len(fields["num_feedbacks"]) == len(self.emitters)
             self._num_emitted = fields["num_feedbacks"]
 
         # Keep track of pos because emitters may have different batch sizes.
