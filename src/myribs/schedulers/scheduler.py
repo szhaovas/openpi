@@ -22,6 +22,7 @@ class SchedulerExternal(Scheduler):
         self._num_active = num_active
         self._emitters = np.array(self._emitters)
         self._active_arr = np.zeros_like(self._emitters, dtype=bool)
+        self._num_emitted = np.asarray(self._num_emitted)
 
     @property
     def emitters(self):
@@ -188,8 +189,10 @@ class SchedulerExternal(Scheduler):
         data["injected"] = fields["injected"]
 
         if "num_feedbacks" in fields:
-            assert len(fields["num_feedbacks"]) == len(self._num_emitted)
-            self._num_emitted = fields["num_feedbacks"]
+            assert len(fields["num_feedbacks"]) == len(self.emitters)
+            self._num_emitted[np.where(self._active_arr)] = fields[
+                "num_feedbacks"
+            ]
 
         # Keep track of pos because emitters may have different batch sizes.
         pos = 0
