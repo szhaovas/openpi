@@ -27,7 +27,7 @@ case "$VLA_TYPE" in
         tmux send-keys -t $session_name "
         export VLA_SERVER_URIs="$(IFS=,; echo "${VLA_SERVER_URIs[*]}")"
         export VLA_TYPE="$VLA_TYPE"
-        uv run -m src.env_search envgen=$ALGO eval.measure_model.model_cfg.input_dim=2048
+        uv run -m src.env_search envgen=$ALGO eval.measure_model.model_cfg.input_dim=1024
         " C-m
         ;;
     openvla)
