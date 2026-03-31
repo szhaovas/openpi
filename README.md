@@ -41,7 +41,7 @@ should have the same length as `VLA_SERVER_URIs`.
 
 QD search will save the finetuning dataset at `~/.cache/huggingface/lerobot/<config.envgen>`.
 
-## Finetune
+## Finetune (OpenPi)
 Compute normalization stats:
 ```bash
 cd openpi
@@ -50,6 +50,35 @@ uv run scripts/compute_norm_stats.py --config-name pi0_libero_low_mem_finetune -
 LoRa SFT:
 ```bash
 XLA_PYTHON_CLIENT_PREALLOCATE=false uv run scripts/train.py pi0_fast_libero_<config.envgen> --exp-name=my_experiment --overwrite
+```
+
+## Finetune (OpenVLA)
+LoRa SFT:
+```bash
+cd openvla_oft
+source .venv/bin/activate
+torchrun --standalone --nnodes 1 --nproc-per-node 1 vla_scripts/finetune.py \
+  --vla_path moojink/openvla-7b-oft-finetuned-libero-spatial \
+  --data_root_dir ~/tensorflow_datasets/<config.envgen>/libero_rlds_builder/1.0.0 \
+  --dataset_name libero_rlds_builder \
+  --run_root_dir checkpoints \
+  --use_l1_regression True \
+  --use_diffusion False \
+  --use_film False \
+  --num_images_in_input 2 \
+  --use_proprio True \
+  --batch_size 4 \
+  --learning_rate 5e-4 \
+  --num_steps_before_decay 100000 \
+  --max_steps 20000 \
+  --save_freq 10000 \
+  --save_latest_checkpoint_only False \
+  --image_aug True \
+  --lora_rank 32 \
+  --wandb_entity "YOUR_WANDB_ENTITY" \
+  --wandb_project "YOUR_WANDB_PROJECT" \
+  --run_id_note <config.envgen> \
+  --grad_accumulation_steps 4
 ```
 
 ## Visualization
