@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 ALGO=$1 # cma_mae or domain_randomization
-VLA_TYPE=$2 # openpi or openvla
+VLA_TYPE=$2 # pi0_fast / pi05 / openvla_oft
 VLA_SERVER_URIs=(
   "0.0.0.0:8000" # space after each uri string
   "0.0.0.0:8001" # this script assumes ip to be local host
@@ -23,14 +23,21 @@ tmux new-session -d -s "$session_name"
 
 # Spawns a pane for running QD loop
 case "$VLA_TYPE" in
-    openpi)
+    pi0_fast)
+        tmux send-keys -t $session_name "
+        export VLA_SERVER_URIs="$(IFS=,; echo "${VLA_SERVER_URIs[*]}")"
+        export VLA_TYPE="$VLA_TYPE"
+        uv run -m src.env_search envgen=$ALGO eval.measure_model.model_cfg.input_dim=2048
+        " C-m
+        ;;
+    pi05)
         tmux send-keys -t $session_name "
         export VLA_SERVER_URIs="$(IFS=,; echo "${VLA_SERVER_URIs[*]}")"
         export VLA_TYPE="$VLA_TYPE"
         uv run -m src.env_search envgen=$ALGO eval.measure_model.model_cfg.input_dim=1024
         " C-m
         ;;
-    openvla)
+    openvla_oft)
         tmux send-keys -t $session_name "
         export VLA_SERVER_URIs="$(IFS=,; echo "${VLA_SERVER_URIs[*]}")"
         export VLA_TYPE="$VLA_TYPE"
@@ -55,13 +62,19 @@ do
     tmux split-window -v
   fi
   case "$VLA_TYPE" in
-      openpi)
+      pi0_fast)
           tmux send-keys -t "$session_name:0.$((server_id+1))" "
             cd openpi
-            XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES="${GPU_IDs[$server_id]}" uv run scripts/serve_policy.py --env LIBERO --port "${VLA_SERVER_URIs[$server_id]##*:}"
+            XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES="${GPU_IDs[$server_id]}" uv run scripts/serve_policy.py --env LIBERO --port "${VLA_SERVER_URIs[$server_id]##*:}" policy:checkpoint --policy.config pi0_fast_libero --policy.dir gs://openpi-assets/checkpoints/pi0_fast_libero
           " C-m
           ;;
-      openvla)
+      pi05)
+          tmux send-keys -t "$session_name:0.$((server_id+1))" "
+            cd openpi
+            XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES="${GPU_IDs[$server_id]}" uv run scripts/serve_policy.py --env LIBERO --port "${VLA_SERVER_URIs[$server_id]##*:}" policy:checkpoint --policy.config pi05_libero --policy.dir gs://openpi-assets/checkpoints/pi05_libero
+          " C-m
+          ;;
+      openvla_oft)
           tmux send-keys -t "$session_name:0.$((server_id+1))" "
             cd openvla_oft
             XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES="${GPU_IDs[$server_id]}" uv run -m vla_scripts.ws_vla_server --port "${VLA_SERVER_URIs[$server_id]##*:}"

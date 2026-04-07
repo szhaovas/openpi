@@ -27,7 +27,7 @@ python CPLEX_Studio201/python/setup.py install
 ./run_env_search.sh <envgen> <vla>
 ```
 - \<envgen>: The environment generation algorithm. Currently can be either `domain_randomization` or `cma_mae`.
-- \<vla>: The vla with which to collect rollouts. Currently can be either `openpi` or `openvla`
+- \<vla>: The vla with which to collect rollouts. Currently can be `pi0_fast` / `pi05` / `openvla_oft`
 
 Some additional fields at the top of `run_env_search.sh` that can be changed:
 - `VLA_SERVER_URIs`: The IPs and ports on which to host VLA servers. The number 
@@ -58,7 +58,7 @@ LoRa SFT:
 cd openvla_oft
 source .venv/bin/activate
 torchrun --standalone --nnodes 1 --nproc-per-node 1 vla_scripts/finetune.py \
-  --vla_path moojink/openvla-7b-oft-finetuned-libero-spatial \
+  --vla_path openvla/openvla-7b \
   --data_root_dir ~/tensorflow_datasets/<config.envgen>/libero_rlds_builder/1.0.0 \
   --dataset_name libero_rlds_builder \
   --run_root_dir checkpoints \

@@ -7,10 +7,10 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from dask.distributed import Client
-from libero.libero.envs import OffScreenRenderEnv
 from numpy.typing import NDArray
 
 from libero.libero import benchmark, get_libero_path
+from libero.libero.envs import OffScreenRenderEnv
 from src.dataset_utils import Trajectory
 from src.measures import MeasureModel
 from src.vla_client.websocket_client_policy import WebsocketClientPolicy
@@ -536,7 +536,11 @@ def rollout(
 
             inference_obj = vla_policy.infer(element)
             if "embedding" in inference_obj:
-                trajectory.embedding.append(inference_obj["embedding"])
+                trajectory.embedding.append(
+                    inference_obj[
+                        "embedding"
+                    ].squeeze()  # Since we only roll out one set of env_params we can assume batch size 1
+                )
 
             action_chunk = np.atleast_2d(inference_obj["actions"])
             if len(action_chunk) < replan_steps:

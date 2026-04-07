@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 import hydra
+import imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -145,6 +146,22 @@ def _filter_succ_dataset(
             filtered_succ_dataset.write_episode(trajectory=shortest_traj)
 
     return filtered_succ_dataset
+
+
+def extract_env_images(
+    env_archive: ArchiveBase,
+    succ_dataset: TempDataset,
+    save_to: Path,
+):
+    save_to.mkdir(parents=True, exist_ok=True)
+
+    succ_traj_idx = env_archive.data("succ_traj_idx")
+    assert succ_traj_idx is not None
+
+    for i, same_env_traj_idx in enumerate(succ_traj_idx):
+        if np.any(same_env_traj_idx != -1):
+            env_image = succ_dataset[same_env_traj_idx[0]].image[0]
+            imageio.imwrite(save_to / f"{i:05d}.png", env_image)
 
 
 def safe_pickle_dump(obj: Any, save_path: Path):
@@ -661,6 +678,12 @@ def main(cfg: DictConfig):
                         scheduler.archive, logdir / f"heatmap_{pbar.n:08d}.png"
                     )
 
+                extract_env_images(
+                    logging_archive,
+                    temp_succ_dataset,
+                    logdir / f"env_images_{pbar.n:08d}",
+                )
+
     # Exports finetune dataset after qd search finishes
     # Filters out redundant and low-quality trajectories
     logger.info("Env search done! Generating finetune dataset...")
@@ -716,9 +739,9 @@ def main(cfg: DictConfig):
 
     # Convert to finetuning format
     vla_type = os.environ["VLA_TYPE"]
-    if vla_type == "openpi":
+    if vla_type in ["pi0_fast", "pi05"]:
         finetune_dataset.convert_to_lerobot(cfg.output_dataset_id)
-    elif vla_type == "openvla":
+    elif vla_type == "openvla_oft":
         finetune_dataset.convert_to_rlds(cfg.output_dataset_id)
     else:
         logger.warning(
