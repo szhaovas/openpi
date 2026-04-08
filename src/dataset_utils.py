@@ -8,6 +8,7 @@ from typing import Dict, Iterable, Iterator, List, Optional, no_type_check
 
 import imageio
 import numpy as np
+import tensorflow_datasets as tfds
 import torch
 from lerobot.datasets.lerobot_dataset import (
     HF_LEROBOT_HOME,
@@ -20,20 +21,18 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-import tensorflow_datasets as tfds
-
 logger = logging.getLogger(__name__)
 
 
 lerobot_dataset_features = {
     "image": {
         "dtype": "image",
-        "shape": (224, 224, 3),
+        "shape": (256, 256, 3),
         "names": ["height", "width", "channel"],
     },
     "wrist_image": {
         "dtype": "image",
-        "shape": (224, 224, 3),
+        "shape": (256, 256, 3),
         "names": ["height", "width", "channel"],
     },
     "state": {
