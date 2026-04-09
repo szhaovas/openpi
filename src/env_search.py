@@ -1,17 +1,15 @@
+"""Contains the main QD search loop with logging."""
+
 import csv
-import glob
-import importlib
 import logging
 import os
 import pickle as pkl
 import random
-import re
 import shutil
-from contextlib import contextmanager
 from functools import reduce
 from operator import add, mul
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Optional, Union
 
 import hydra
 import imageio
@@ -33,63 +31,17 @@ from src.dataset_utils import (
     Trajectory,
     filter_lerobot_dataset_by_task,
 )
+from src.easy_utils import (
+    extract_scheduler_nevals,
+    patch_pkl_load,
+    safe_pkl_dump,
+)
 from src.libero_spatial_eval import (
     get_default_env_params,
     libero_spatial_prompts,
 )
 
 logger = logging.getLogger(__name__)
-
-
-@contextmanager
-def _monkey_patch_pkl_load():
-    """Run pickle.load within this context if you see an error with
-    __generator_ctor expecting 1 argument when loading from a pkl checkpoint.
-    """
-    mod = importlib.import_module("numpy.random._pickle")
-    orig = getattr(mod, "__generator_ctor", None)
-
-    def compat_generator_ctor(*args, **kwargs):
-        # Try to be permissive: if orig accepts the args, call it
-        try:
-            return orig(*args, **kwargs)
-        except TypeError:
-            # If orig expects a single arg (the more common case), call with first arg
-            if len(args) >= 1:
-                return orig(args[0])
-            # fallback: raise original error
-            raise
-
-    if orig is not None:
-        mod.__generator_ctor = compat_generator_ctor
-
-    try:
-        yield
-    finally:
-        mod.__generator_ctor = orig
-
-
-def extract_scheduler_nevals(experiment_logdir: str) -> Dict[str, int]:
-    """Extracts the numbers of evaluations at all scheduler checkpoints within
-    an experiment log. Returns a dictionary matching checkpoint filenames with
-    extracted numbers of evaluations.
-
-    A scheduler checkpoint is expected to be named after the
-    ``scheduler_[0-9]{8}.pkl`` format, in which the digits record its number
-    of evaluations.
-    """
-    all_scheduler_ckpt = glob.glob(
-        f"{experiment_logdir}/scheduler_{'[0-9]'*8}.pkl"
-    )
-
-    result = {}
-    pattern = r"scheduler_(\d{8})\.pkl"
-    for filename in all_scheduler_ckpt:
-        match = re.search(pattern, filename)
-        if match:
-            result[filename] = int(match.group(1))
-
-    return result
 
 
 def _delete_trajectories_after_idx(dataset: TempDataset, del_after: int):
@@ -148,7 +100,7 @@ def _filter_succ_dataset(
     return filtered_succ_dataset
 
 
-def extract_env_images(
+def _extract_env_images(
     env_archive: ArchiveBase,
     succ_dataset: TempDataset,
     save_to: Path,
@@ -162,22 +114,6 @@ def extract_env_images(
         if np.any(same_env_traj_idx != -1):
             env_image = succ_dataset[same_env_traj_idx[0]].image[0]
             imageio.imwrite(save_to / f"{i:05d}.png", env_image)
-
-
-def safe_pickle_dump(obj: Any, save_path: Path):
-    """Checks free disk space before picking an object. This prevents using up
-    all remaining disk space with a partially-written and unusable object.
-    """
-    obj_size = len(pkl.dumps(obj, protocol=pkl.HIGHEST_PROTOCOL))
-    free_space = shutil.disk_usage(save_path.parent).free
-
-    if obj_size > free_space:
-        raise OSError(
-            f"Not enough disk space: need {obj_size} bytes, have {free_space}"
-        )
-
-    with open(save_path, "wb") as f:
-        pkl.dump(obj, f)
 
 
 def save_heatmap(
@@ -307,7 +243,7 @@ def collect_embeddings(colemb_cfg: DictConfig):
                 task_id=all_task_id,
             )
 
-    safe_pickle_dump(scheduler.archive, embedding_logdir / "test_envs.pkl")
+    safe_pkl_dump(scheduler.archive, embedding_logdir / "test_envs.pkl")
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="main")
@@ -439,7 +375,7 @@ def main(cfg: DictConfig):
             file=logdir / f"scheduler_{starting_nevals:08d}.pkl",
             mode="rb",
         ) as f:
-            with _monkey_patch_pkl_load():
+            with patch_pkl_load():
                 scheduler = pkl.load(f)
 
             # clean up orphan trajectories whose rollout environments are not
@@ -622,12 +558,12 @@ def main(cfg: DictConfig):
             num_feasible_envs = len(feasible_env_idx)
 
             if num_feasible_envs > 0:
-                avg_emb_dist = np.mean(
-                    pairwise_distances(
-                        X=archive_data["embedding"][feasible_env_idx],
-                        metric="euclidean",
-                    )
-                )
+                embeddings = archive_data["embedding"][feasible_env_idx]
+                avg_emb_dist = pairwise_distances(
+                    X=embeddings, metric="euclidean"
+                ).sum() / (
+                    embeddings.shape[0] * (embeddings.shape[0] - 1)
+                )  # exclude zeroes along the diagonal
                 rbf_K = rbf_kernel(
                     X=archive_data["embedding"][feasible_env_idx], gamma=0.002
                 )  # gamma is chosen to match median embedding distance
@@ -653,9 +589,7 @@ def main(cfg: DictConfig):
             if nevals_since_last_log > cfg.log_every or final_itr:
                 nevals_since_last_log = 0
 
-                safe_pickle_dump(
-                    scheduler, logdir / f"scheduler_{pbar.n:08d}.pkl"
-                )
+                safe_pkl_dump(scheduler, logdir / f"scheduler_{pbar.n:08d}.pkl")
 
                 with open(summary_filename, "a") as summary_file:
                     writer = csv.writer(summary_file)
@@ -678,7 +612,7 @@ def main(cfg: DictConfig):
                         scheduler.archive, logdir / f"heatmap_{pbar.n:08d}.png"
                     )
 
-                extract_env_images(
+                _extract_env_images(
                     logging_archive,
                     temp_succ_dataset,
                     logdir / f"env_images_{pbar.n:08d}",

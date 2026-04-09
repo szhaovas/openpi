@@ -12,13 +12,13 @@ from ribs.visualize import grid_archive_heatmap
 from tqdm import tqdm
 
 from src.dataset_utils import TempDataset
-from src.env_search import (
-    _monkey_patch_pkl_load,
+from src.easy_utils import (
     extract_scheduler_nevals,
-    safe_pickle_dump,
-    save_heatmap,
+    patch_pkl_load,
+    safe_pkl_dump,
 )
-from src.libero_spatial_eval import LiberoSpatialEval
+from src.env_search import save_heatmap
+from src.libero_spatial_eval import LiberoSpatialEval, libero_spatial_prompts
 from src.measures import PCAMeasure
 from src.myribs.archives import LoggingArchive
 
@@ -270,7 +270,7 @@ def success_rates_on_envs(
         for traj in trajectories:
             rollout_dataset.write_episode(trajectory=traj)
 
-        safe_pickle_dump(success_rates_archive, logpath / "success_rates.pkl")
+        safe_pkl_dump(success_rates_archive, logpath / "success_rates.pkl")
 
 
 def sample_test_envs(
@@ -306,7 +306,7 @@ def sample_test_envs(
     )
 
     if save_to is not None:
-        safe_pickle_dump(test_env_archive, Path(save_to))
+        safe_pkl_dump(test_env_archive, Path(save_to))
 
     return test_env_archive
 
@@ -367,18 +367,7 @@ def redraw_heatmap_pca(
 
 
 def tally_traj_by_task(traj_dataset: TempDataset) -> Dict[str, List]:
-    traj_id_by_task = {
-        "pick up the black bowl between the plate and the ramekin and place it on the plate": [],
-        "pick up the black bowl next to the ramekin and place it on the plate": [],
-        "pick up the black bowl from table center and place it on the plate": [],
-        "pick up the black bowl on the cookie box and place it on the plate": [],
-        "pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate": [],
-        "pick up the black bowl on the ramekin and place it on the plate": [],
-        "pick up the black bowl next to the cookie box and place it on the plate": [],
-        "pick up the black bowl on the stove and place it on the plate": [],
-        "pick up the black bowl next to the plate and place it on the plate": [],
-        "pick up the black bowl on the wooden cabinet and place it on the plate": [],
-    }
+    traj_id_by_task = {prompt: [] for prompt in libero_spatial_prompts}
     for traj_id, traj in enumerate(tqdm(traj_dataset)):
         assert traj.prompt is not None
         traj_id_by_task[traj.prompt].append(traj_id)
@@ -386,12 +375,22 @@ def tally_traj_by_task(traj_dataset: TempDataset) -> Dict[str, List]:
     return traj_id_by_task
 
 
+def success_rates_by_task(success_rates_akv: ArchiveBase) -> List:
+    success_rates, task_id = success_rates_akv.data(
+        ["objective", "task_id"], return_type="tuple"
+    )
+    return [
+        np.mean(success_rates[task_id == tid])
+        for tid in range(len(libero_spatial_prompts))
+    ]
+
+
 if __name__ == "__main__":
     with open(
-        file="results/cma_mae-openpi/embeddings/test_envs.pkl",
+        file="even_combined_adv_test_envs.pkl",
         mode="rb",
     ) as f:
-        with _monkey_patch_pkl_load():
+        with patch_pkl_load():
             env_archive = pkl.load(f)
 
         success_rates_on_envs(
@@ -408,32 +407,112 @@ if __name__ == "__main__":
         )
 
     # with open(
-    #     file="success_rates-base/success_rates.pkl",
+    #     file="adv-testenvs-cma_mae.pkl",
     #     mode="rb",
     # ) as f:
-    #     with _monkey_patch_pkl_load():
-    #         success_rates = pkl.load(f)
+    #     with patch_pkl_load():
+    #         cma_mae_test_envs = pkl.load(f)
+    #         cma_mae_test_envs_data = cma_mae_test_envs.data(["solution", "measures", "objective", "task_id"])
 
-    #     dummy_archive = GridArchive(
-    #         solution_dim=success_rates.solution_dim,
-    #         dims=[10, 32],  # update if needed
-    #         ranges=[[0, 10], [0, 32]],  # update if needed
+    # with open(
+    #     file="adv-testenvs-domain_randomization.pkl",
+    #     mode="rb",
+    # ) as f:
+    #     with patch_pkl_load():
+    #         domain_randomization_test_envs = pkl.load(f)
+    #         domain_randomization_test_envs_data = domain_randomization_test_envs.data(["solution", "measures", "objective", "task_id"])
+
+    # sub_test_env_archive = LoggingArchive(
+    #     solution_dim=cma_mae_test_envs.solution_dim,
+    #     starting_cells=1000,
+    #     extra_fields={
+    #         "task_id": (
+    #             (),
+    #             np.int32,
+    #         )
+    #     },
+    # )
+
+    # for tid in range(len(libero_spatial_prompts)):
+    #     cma_mae_idx = np.where(cma_mae_test_envs_data["task_id"] == tid)[0]
+    #     domain_randomization_idx = np.where(domain_randomization_test_envs_data["task_id"] == tid)[0]
+    #     num_test_envs = min(len(cma_mae_idx), len(domain_randomization_idx))
+    #     print(num_test_envs)
+
+    #     cma_mae_sampled_idx = np.random.choice(
+    #         cma_mae_idx, size=num_test_envs, replace=False
     #     )
 
-    #     env_counter = [0] * 10
-    #     for cell in success_rates:
-    #         task_id = cell["task_id"]
-    #         dummy_archive.add_single(
-    #             solution=cell["solution"],
-    #             objective=cell["objective"],
-    #             measures=[task_id, env_counter[task_id]],
-    #         )
-    #         env_counter[task_id] += 1
+    #     sub_test_env_archive.add(
+    #         solution=cma_mae_test_envs_data["solution"][cma_mae_sampled_idx],
+    #         measures=cma_mae_test_envs_data["measures"][cma_mae_sampled_idx],
+    #         objective=cma_mae_test_envs_data["objective"][cma_mae_sampled_idx],
+    #         task_id=cma_mae_test_envs_data["task_id"][cma_mae_sampled_idx],
+    #     )
 
-    #     colors = np.full((32, 10), np.nan)
-    #     index_batch = dummy_archive.data("index")
-    #     objective_batch = dummy_archive.data("objective")
-    #     grid_index_batch = dummy_archive.int_to_grid_index(index_batch)
-    #     colors[grid_index_batch[:, 1], grid_index_batch[:, 0]] = objective_batch
+    #     domain_randomization_sampled_idx = np.random.choice(
+    #         domain_randomization_idx, size=num_test_envs, replace=False
+    #     )
 
-    #     print(np.mean(colors, axis=0))
+    #     sub_test_env_archive.add(
+    #         solution=domain_randomization_test_envs_data["solution"][domain_randomization_sampled_idx],
+    #         measures=domain_randomization_test_envs_data["measures"][domain_randomization_sampled_idx],
+    #         objective=domain_randomization_test_envs_data["objective"][domain_randomization_sampled_idx],
+    #         task_id=domain_randomization_test_envs_data["task_id"][domain_randomization_sampled_idx],
+    #     )
+
+    # safe_pkl_dump(
+    #     sub_test_env_archive, Path("even_combined_adv_test_envs.pkl")
+    # )
+
+    # from src.env_search import extract_env_images
+
+    # all_nevals = extract_scheduler_nevals("results/cma_mae-pi05")
+
+    # succ_dataset = TempDataset(Path("results/cma_mae-pi05/succ_dataset"))
+
+    # for filename, nevals in all_nevals.items():
+    #     with open(file=filename, mode="rb") as f:
+    #         env_archive = pkl.load(f).result_archive
+
+    #     extract_env_images(
+    #         env_archive,
+    #         succ_dataset,
+    #         Path("results/cma_mae-pi05") / f"env_images_{nevals:08d}",
+    #     )
+
+    # with open(
+    #     file="success_rates-base-openvla-even/success_rates.pkl",
+    #     mode="rb",
+    # ) as f:
+    #     with patch_pkl_load():
+    #         success_rates = pkl.load(f)
+
+    #     print(np.mean(success_rates_by_task(success_rates)))
+
+    # from sklearn.metrics import pairwise_distances
+
+    # all_nevals = extract_scheduler_nevals(
+    #     # "outputs/domain_randomization/2026-04-08_023131"
+    #     "outputs/cma_mae/2026-04-08_022945"
+    # )
+
+    # all_dists = []
+    # for filename, nevals in all_nevals.items():
+    #     with open(file=filename, mode="rb") as f:
+    #         archive = pkl.load(f).result_archive
+    #         archive_data = archive.data(["objective", "embedding"])
+    #         feasible_env_idx = np.where(archive_data["objective"] > 1e-6)[0]
+
+    #     embeddings = archive_data["embedding"][feasible_env_idx]
+    #     avg_emb_dist = pairwise_distances(
+    #         X=embeddings, metric="euclidean"
+    #     ).sum() / (
+    #         embeddings.shape[0] * (embeddings.shape[0] - 1)
+    #     )  # exclude zeroes along the diagonal
+    #     all_dists.append(avg_emb_dist)
+
+    # all_dists = np.array(all_dists)
+    # all_dists = all_dists[np.argsort(list(all_nevals.values()))]
+
+    # print(all_dists)

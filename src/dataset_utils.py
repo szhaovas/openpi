@@ -1,4 +1,6 @@
-import contextlib
+"""Manages storage and retrieval of rollout trajectories. Also handles exportation
+to LeRobot and RLDS formats."""
+
 import glob
 import logging
 import shutil
@@ -20,6 +22,8 @@ from tensorflow_datasets.core.utils.file_utils import get_default_data_dir
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 from tqdm import tqdm
+
+from src.easy_utils import suppress_tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -139,12 +143,23 @@ class TempDataset(Dataset):
     def __getitem__(self, idx: int) -> Trajectory:
         eps_dir = self.dataset_dir / f"ep_{idx:05d}"
 
-        state_proprio_action_embedding = np.load(
-            eps_dir / "state_proprio_action_embedding.npz"
-        )
-        state = state_proprio_action_embedding["state"]
-        proprio = state_proprio_action_embedding["proprio"]
-        action = state_proprio_action_embedding["action"]
+        try:
+            state_proprio_action_embedding = np.load(
+                eps_dir / "state_proprio_action_embedding.npz"
+            )
+            state = state_proprio_action_embedding["state"]
+            proprio = state_proprio_action_embedding["proprio"]
+            action = state_proprio_action_embedding["action"]
+        except FileNotFoundError:
+            # TODO: This is for trajectories collected without proprio; remove
+            # when publishing
+            state_proprio_action_embedding = np.load(
+                eps_dir / "state_action_embedding.npz"
+            )
+            state = state_proprio_action_embedding["state"]
+            proprio = np.random.rand(len(state), 7)
+            action = state_proprio_action_embedding["action"]
+
         if "embedding" in state_proprio_action_embedding:
             embedding = state_proprio_action_embedding["embedding"]
         else:
@@ -252,7 +267,7 @@ class TempDataset(Dataset):
         )
 
         for trajectory in tqdm(self):
-            with _suppress_tqdm():
+            with suppress_tqdm():
                 for image, wrist_image, state, action in zip(
                     trajectory.image,
                     trajectory.wrist_image,
@@ -400,21 +415,6 @@ class LiberoRLDSBuilder(tfds.core.GeneratorBasedBuilder):
             }
 
         logger.info(f"Filtered out {num_noops} steps with near-zero actions")
-
-
-@contextlib.contextmanager
-def _suppress_tqdm():
-    original = tqdm.__init__
-
-    def disabled_init(self, *args, **kwargs):
-        kwargs["disable"] = True
-        original(self, *args, **kwargs)
-
-    tqdm.__init__ = disabled_init
-    try:
-        yield
-    finally:
-        tqdm.__init__ = original
 
 
 def embedding_collate(batch: Iterable[Trajectory]) -> torch.Tensor:
