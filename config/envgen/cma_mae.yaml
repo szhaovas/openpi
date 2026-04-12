@@ -12,7 +12,7 @@ qd_archive:
 # This is needed because QD archive implements elitism and may discard past results if better alternatives are found.
 logging_archive:
   _target_: src.myribs.archives.LoggingArchive
-  starting_cells: ${oc.mul:2, ${oc.add:${collect_embedding_num_evals}, ${env_search_num_evals}}} # 2 * evaluation budget to make sure hashing succeeds
+  starting_cells: ${oc.mul:2, ${env_search_num_evals}} # 2 * evaluation budget to make sure hashing succeeds
 
 emitter:
   # _target_: src.myribs.emitters.EvolutionStrategyEmitterExternal

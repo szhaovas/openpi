@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-ALGO=$1 # cma_mae or domain_randomization
+ALGO=$1 # cma_mae / domain_randomization / cma_es
 VLA_TYPE=$2 # pi0_fast / pi05 / openvla_oft
 VLA_SERVER_URIs=(
   "0.0.0.0:8000" # space after each uri string

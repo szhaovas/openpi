@@ -1,6 +1,6 @@
 import pickle as pkl
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -273,15 +273,13 @@ def success_rates_on_envs(
         safe_pkl_dump(success_rates_archive, logpath / "success_rates.pkl")
 
 
-def sample_test_envs(
-    env_archive: ArchiveBase, p: float, save_to: Optional[str] = None
-) -> LoggingArchive:
+def sample_test_envs(env_archive: ArchiveBase, p: float) -> LoggingArchive:
     assert 0 < p <= 1
 
     archive_data = env_archive.data(
         ["solution", "measures", "objective", "task_id"]
     )
-    feasible_env_idx = np.where(archive_data["objective"] > 0.01)[0]
+    feasible_env_idx = np.where(archive_data["objective"] > 1e-6)[0]
     num_test_envs = round(len(feasible_env_idx) * p)
 
     test_env_idx = np.random.choice(
@@ -304,9 +302,6 @@ def sample_test_envs(
         objective=archive_data["objective"][test_env_idx],
         task_id=archive_data["task_id"][test_env_idx],
     )
-
-    if save_to is not None:
-        safe_pkl_dump(test_env_archive, Path(save_to))
 
     return test_env_archive
 
@@ -387,7 +382,7 @@ def success_rates_by_task(success_rates_akv: ArchiveBase) -> List:
 
 if __name__ == "__main__":
     with open(
-        file="even_combined_adv_test_envs.pkl",
+        file="results/cma_mae-openvla/holdout_envs.pkl",
         mode="rb",
     ) as f:
         with patch_pkl_load():
@@ -403,7 +398,7 @@ if __name__ == "__main__":
                 "10.136.109.136:50800",  # momo 8000
                 # '10.136.109.136:53800', # atlas 8000
             ],
-            "success_rates",
+            "success_rates-domain_randomization-openvla-cma_mae",
         )
 
     # with open(

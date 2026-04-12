@@ -9,7 +9,7 @@ import shutil
 from functools import reduce
 from operator import add, mul
 from pathlib import Path
-from typing import Optional, Union
+from typing import List, Optional, Tuple, Union
 
 import hydra
 import imageio
@@ -40,6 +40,7 @@ from src.libero_spatial_eval import (
     get_default_env_params,
     libero_spatial_prompts,
 )
+from src.myribs.archives import LoggingArchive
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,8 @@ def _filter_succ_dataset(
     succ_dataset: TempDataset,
     filtered_dataset_path: Path,
     max_traj_len: Optional[int] = None,
-) -> TempDataset:
+    holdout_prob: float = 0,
+) -> Tuple[TempDataset, LoggingArchive]:
     """``succ_dataset`` may contain multiple rollout trajectories for each
     environment stored in ``env_archive``, which can cause action divergence.
     This function filters ``succ_dataset`` so that it contains only a single
@@ -72,18 +74,53 @@ def _filter_succ_dataset(
         filtered_dataset_path: The filtered dataset will be saved to this path.
         max_traj_len: If specified, only trajectories shorter than this
             threshold will be saved to the filtered dataset.
+        holdout_prob: Probability that an environment will be excluded from
+            filtered_succ_dataset. These excluded environments will be returned
+            in a separate ``holdout_env_archive`` archive to be used as test
+            environments.
 
     Returns:
         filtered_succ_dataset
+        holdout_env_archive
     """
     succ_traj_idx = env_archive.data("succ_traj_idx")
     assert succ_traj_idx is not None
 
-    filtered_succ_dataset = TempDataset(dataset_dir=filtered_dataset_path)
+    env_archive_data = env_archive.data(
+        ["solution", "measures", "objective", "task_id"]
+    )
+    feasible_env_idx = np.where(env_archive_data["objective"] > 1e-6)[0]
+    num_holdout_envs = round(len(feasible_env_idx) * holdout_prob)
 
-    for same_env_traj_idx in tqdm(
-        succ_traj_idx, desc="Filtering collected trajs"
+    filtered_succ_dataset = TempDataset(dataset_dir=filtered_dataset_path)
+    holdout_env_archive = LoggingArchive(
+        solution_dim=env_archive.solution_dim,
+        starting_cells=2 * num_holdout_envs,
+        extra_fields={
+            "task_id": (
+                (),
+                np.int32,
+            )
+        },
+    )
+
+    holdout_env_idx = np.random.choice(
+        feasible_env_idx, size=num_holdout_envs, replace=False
+    )
+    holdout_env_archive.add(
+        solution=env_archive_data["solution"][holdout_env_idx],
+        measures=env_archive_data["measures"][holdout_env_idx],
+        objective=env_archive_data["objective"][holdout_env_idx],
+        task_id=env_archive_data["task_id"][holdout_env_idx],
+    )
+
+    for env_idx, same_env_traj_idx in enumerate(
+        tqdm(succ_traj_idx, desc="Filtering collected trajs")
     ):
+        # Exclude some environments for holdout
+        if env_idx in holdout_env_idx:
+            continue
+
         shortest_traj = None
         min_len = np.inf
         for traj_idx in same_env_traj_idx[same_env_traj_idx != -1]:
@@ -97,7 +134,7 @@ def _filter_succ_dataset(
         ):
             filtered_succ_dataset.write_episode(trajectory=shortest_traj)
 
-    return filtered_succ_dataset
+    return filtered_succ_dataset, holdout_env_archive
 
 
 def _extract_env_images(
@@ -164,86 +201,70 @@ def seed_everything(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
-def collect_embeddings(colemb_cfg: DictConfig):
-    embedding_logdir = Path(colemb_cfg.save_embeddings_to)
+def _collect_embeddings(
+    collect_on_tasks: List[int],
+    num_collect_for_each_task: Union[int, List[int]],
+    sigma: Union[float, List[float]],
+    save_embeddings_to: str,
+):
+    """Collects random embeddings by sampling some environments and evaluating
+    the VLA on each environment for a single time step.
 
-    embedding_dataset = TempDataset(dataset_dir=embedding_logdir)
+    Args:
+        collect_on_tasks: List of task IDs on which to collect embeddings.
+        num_collect_for_each_task: The number of embeddings to collect for each
+            task. Can specify a different number for each task.
+        sigma: Gaussian sigma when sampling environments. Can specify a
+            different sigma for each task.
+        save_embeddings_to: Where to save collected embeddings.
+    """
+    embedding_dataset = TempDataset(dataset_dir=Path(save_embeddings_to))
 
-    archive = instantiate(
-        colemb_cfg.envgen.logging_archive,
-        solution_dim=len(get_default_env_params()),
-        extra_fields={
-            "task_id": (
-                (),
-                np.int32,
-            ),  # store task_id for each env for later eval
-        },
-    )
-
-    emitters = [
-        instantiate(
-            colemb_cfg.envgen.emitter,
-            archive=archive,
-            sigma=colemb_cfg.collect_embedding_sigma,
-            x0=get_default_env_params(tid),
+    random_env_params = [
+        np.random.normal(
+            loc=get_default_env_params(tid),
+            scale=ts,
+            size=(tn, len(get_default_env_params())),
         )
-        for tid in colemb_cfg.eval.task_ids
+        for tid, tn, ts in zip(
+            collect_on_tasks,
+            np.broadcast_to(num_collect_for_each_task, len(collect_on_tasks)),
+            np.broadcast_to(sigma, len(collect_on_tasks)),
+        )
     ]
-    for em, tid in zip(emitters, colemb_cfg.eval.task_ids):
-        em.task_id = tid
+    random_env_params = np.vstack(random_env_params)
 
-    scheduler = instantiate(
-        colemb_cfg.envgen.scheduler, archive=archive, emitters=emitters
-    )
-
-    if colemb_cfg.single_process:
-        client = None
-    else:
-        cluster = LocalCluster(
-            processes=True,
-            n_workers=int(os.environ["NUM_SERVERS"]),
-            threads_per_worker=1,
-        )
-        client = Client(cluster)
-
+    evaluator_cfg = hydra.compose(
+        config_name="main",
+        overrides=[
+            "eval=first_timestep",
+        ],
+    ).eval.task_eval
     evaluators = [
-        instantiate(colemb_cfg.eval.task_eval, task_id=tid, dask_client=client)
-        for tid in range(10)
+        instantiate(
+            evaluator_cfg,
+            task_id=tid,
+            dask_client=None,  # Not worth the dask overheads since single step rollouts return quickly
+        )
+        for tid in range(len(libero_spatial_prompts))
     ]
 
-    with tqdm(range(colemb_cfg.collect_embedding_num_evals)) as pbar:
-        while pbar.n < pbar.total:
-            solutions = scheduler.ask()
-
-            all_task_id = []
-            for eid, em in enumerate(scheduler.emitters):
-                sol_start = eid * colemb_cfg.envgen.emitter.batch_size
-                sol_end = sol_start + colemb_cfg.envgen.emitter.batch_size
-                repaired, trajectories = evaluators[
-                    em.task_id
-                ].get_single_trajectories(
-                    solutions=solutions[sol_start:sol_end]
-                )
-                pbar.update(colemb_cfg.envgen.emitter.batch_size)
-                pbar.refresh()
-
-                all_task_id += [
-                    em.task_id
-                ] * colemb_cfg.envgen.emitter.batch_size
-
-                for traj in trajectories:
-                    embedding_dataset.write_episode(trajectory=traj)
-
-            # Dummy objective and measure values
-            scheduler.tell(
-                np.repeat(1e-6, solutions.shape[0]),
-                np.random.rand(solutions.shape[0], 1),
-                solution=repaired,
-                injected=np.full(solutions.shape[0], False),
-                task_id=all_task_id,
-            )
-
-    safe_pkl_dump(scheduler.archive, embedding_logdir / "test_envs.pkl")
+    for randenv, tid in tqdm(
+        zip(
+            random_env_params,
+            np.repeat(
+                collect_on_tasks,
+                np.broadcast_to(
+                    num_collect_for_each_task, len(collect_on_tasks)
+                ),
+            ),
+        ),
+        initial=0,
+        total=len(random_env_params),
+    ):
+        _, _, _, traj, _ = evaluators[tid].evaluate_single(solution=randenv)
+        assert len(traj) == 1
+        embedding_dataset.write_episode(trajectory=traj[0])
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="main")
@@ -335,15 +356,12 @@ def main(cfg: DictConfig):
 
         # Collect some embeddings to train a measure model for latent representations
         # Not needed by domain randomization itself but still useful for logging and visualization
-        collect_embedding_config = hydra.compose(
-            config_name="main",
-            overrides=[
-                "envgen=domain_randomization",
-                "eval=first_timestep",
-                "single_process=true",
-            ],
+        _collect_embeddings(
+            collect_on_tasks=cfg.eval.task_ids,
+            num_collect_for_each_task=cfg.num_embeddings_each_task,
+            sigma=cfg.collect_embeddings_sigma,
+            save_embeddings_to=cfg.save_embeddings_to,
         )
-        collect_embeddings(collect_embedding_config)
         measure_model = instantiate(cfg.eval.measure_model)
 
         with open(summary_filename, "w") as summary_file:
@@ -416,7 +434,7 @@ def main(cfg: DictConfig):
         )
         client = Client(cluster)
 
-    # Each task gets an evaluator. There are 10 libero-spatial tasks
+    # Each task gets an evaluator.
     # TODO: Define an evaluator retrieval
     evaluators = [
         instantiate(
@@ -425,7 +443,7 @@ def main(cfg: DictConfig):
             dask_client=client,
             measure_model=measure_model,
         )
-        for tid in range(10)
+        for tid in range(len(libero_spatial_prompts))
     ]
 
     nevals_since_last_log = 0
@@ -621,14 +639,23 @@ def main(cfg: DictConfig):
     # Exports finetune dataset after qd search finishes
     # Filters out redundant and low-quality trajectories
     logger.info("Env search done! Generating finetune dataset...")
-    finetune_dataset = _filter_succ_dataset(
+    finetune_dataset, holdout_env_archive = _filter_succ_dataset(
         env_archive=scheduler.result_archive,
         succ_dataset=temp_succ_dataset,
         filtered_dataset_path=logdir / "finetune_dataset",
         max_traj_len=110,
+        holdout_prob=cfg.test_env_holdout_prob,
+    )
+    # Saves held-out environments for test set
+    safe_pkl_dump(holdout_env_archive, logdir / "holdout_envs.pkl")
+
+    logger.info(
+        f"Out of {np.sum(scheduler.result_archive.data('objective') > 1e-6)} adversarial environments found, "
+        f"{len(finetune_dataset)} environments have been chosen for the finetune dataset. "
+        f"{len(holdout_env_archive)} environments have been held-out as test set at {logdir / 'holdout_envs.pkl'}"
     )
 
-    # Adds some trajectories from the base libero dataset to prevent forgetting
+    # Adds some trajectories from the vanilla libero dataset to prevent forgetting
     filtered_lerobot_dataset = filter_lerobot_dataset_by_task(
         repo_id="physical-intelligence/libero",
         task_prompts=libero_spatial_prompts[cfg.eval.task_ids],
@@ -639,9 +666,9 @@ def main(cfg: DictConfig):
             filtered_lerobot_dataset.episode_data_index["to"].numpy(),
         ),
         total=len(filtered_lerobot_dataset.episode_data_index["from"]),
-        desc="Adding base trajs",
+        desc="Adding vanilla trajs",
     ):
-        if np.random.rand() > cfg.proportion_of_base_data_to_mix:
+        if np.random.rand() > cfg.proportion_of_vanilla_data_to_mix:
             continue
 
         trajectory = Trajectory(

@@ -407,6 +407,13 @@ class LiberoRLDSBuilder(tfds.core.GeneratorBasedBuilder):
                         "language_instruction": trajectory.prompt,
                     }
                 )
+
+            # TODO: OpenVLA-OFT training pipeline crashes on very short
+            # trajectories. For now we skip them since there are very few such
+            # trajectories.
+            if len(steps) < 10:
+                continue
+
             yield traj_id, {
                 "steps": steps,
                 "episode_metadata": {

@@ -9,10 +9,10 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from dask.distributed import Client
+from libero.libero.envs import OffScreenRenderEnv
 from numpy.typing import NDArray
 
 from libero.libero import benchmark, get_libero_path
-from libero.libero.envs import OffScreenRenderEnv
 from src.dataset_utils import Trajectory
 from src.measures import MeasureModel
 from src.vla_client.websocket_client_policy import WebsocketClientPolicy
@@ -378,75 +378,6 @@ class LiberoSpatialEval:
             trajectories,
             np.array(edit_dist),
         )
-
-    # TODO: clean this up
-    def get_single_trajectories(
-        self, solutions: np.ndarray
-    ) -> Tuple[np.ndarray, List[Trajectory]]:
-        """Useful for collecting embeddings for measure model training. We define
-        this seperately from :meth:`evaluate` because each solution only gets
-        evaluated once when collecting embeddings and it no longer makes sense
-        to parallelize by rollouts. Instead, this function parallelizes by
-        solutions.
-        """
-        assert self.num_trials_per_sol == 1
-
-        if self._dask_client is not None:
-            repaired, futures = [], []
-            for sol_id, sol in enumerate(solutions):
-                env = self._eval_stub(env_params=sol)
-                obs = env.reset()
-                if obs is None:
-                    logger.warning(
-                        "Failed to repair environment"
-                    )  # Allow repair failure since we are not actually rolling it out
-
-                rep = env.env.env_params.copy()
-                repaired.append(rep)
-
-                futures.append(
-                    self._dask_client.submit(
-                        rollout,
-                        env_params=rep,
-                        vla_server_uri=self.vla_server_uris[sol_id],
-                        eval_stub=self._eval_stub,
-                        prompt=self.prompt,
-                        max_steps=self.max_steps,
-                        num_steps_wait=self.num_steps_wait,
-                        replan_steps=self.replan_steps,
-                        seed=self._seed,
-                        pure=False,
-                    )
-                )
-
-            results = self._dask_client.gather(futures)
-            trajectories = [traj for _, traj in results]
-        else:
-            repaired, trajectories = [], []
-            for _, sol in enumerate(solutions):
-                env = self._eval_stub(env_params=sol)
-                obs = env.reset()
-                if obs is None:
-                    logger.warning(
-                        "Failed to repair environment"
-                    )  # Allow repair failure since we are not actually rolling it out
-
-                rep = env.env.env_params.copy()
-                repaired.append(rep)
-
-                _, traj = rollout(
-                    env_params=rep,
-                    vla_server_uri=self.vla_server_uris[0],
-                    eval_stub=self._eval_stub,
-                    prompt=self.prompt,
-                    max_steps=self.max_steps,
-                    num_steps_wait=self.num_steps_wait,
-                    replan_steps=self.replan_steps,
-                    seed=self._seed,
-                )
-                trajectories.append(traj)
-
-        return np.array(repaired), trajectories
 
 
 def rollout(

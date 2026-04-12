@@ -7,14 +7,13 @@ hydra:
   run:
     dir: ./outputs/${hydra:runtime.choices.envgen}/${now:%Y-%m-%d_%H%M%S}
 
-collect_embedding_num_evals: ${oc.mul:4, ${oc.len:${eval.task_ids}}, ${envgen.emitter.batch_size}} # 4 batches from each task
-collect_embedding_sigma: 0.04
+# for embedding collection
+num_embeddings_each_task: 0
+collect_embeddings_sigma: 0.04
 save_embeddings_to: ${hydra:runtime.output_dir}/embeddings
 
 # search_itr * emitter_batch_size * trials_per_sol
 env_search_num_evals: ${oc.mul:100, ${envgen.emitter.batch_size}, ${eval.task_eval.num_trials_per_sol}}
-proportion_of_base_data_to_mix: 0.2
-output_dataset_id: ${hydra:runtime.choices.envgen}
 log_every: ${oc.mul:5, ${envgen.emitter.batch_size}, ${eval.task_eval.num_trials_per_sol}} # Log every 5 search iterations
 seed: 42
 
@@ -22,3 +21,8 @@ single_process: ${oc.equals:${oc.len:${oc.env_csv:VLA_SERVER_URIs}}, 1} # If Tru
 
 # for resuming an experiment
 reload_from_dir: null
+
+# for exporting training and test datasets
+proportion_of_vanilla_data_to_mix: 1.0
+test_env_holdout_prob: 0.2
+output_dataset_id: ${hydra:runtime.choices.envgen}
