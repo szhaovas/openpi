@@ -26,7 +26,7 @@ python CPLEX_Studio201/python/setup.py install
 ```bash
 ./run_env_search.sh <envgen> <vla>
 ```
-- \<envgen>: The environment generation algorithm. Currently can be either `domain_randomization` or `cma_mae`.
+- \<envgen>: The environment generation algorithm. Currently can be `domain_randomization` / `cma_mae` / `cma_es`.
 - \<vla>: The vla with which to collect rollouts. Currently can be `pi0_fast` / `pi05` / `openvla_oft`
 
 Some additional fields at the top of `run_env_search.sh` that can be changed:
@@ -39,17 +39,17 @@ Some additional fields at the top of `run_env_search.sh` that can be changed:
 - `GPU_IDs`: Defines the CUDA device IDs on which to host VLA servers. This 
 should have the same length as `VLA_SERVER_URIs`.
 
-QD search will save the finetuning dataset at `~/.cache/huggingface/lerobot/<config.envgen>`.
+QD search will save the finetuning dataset at `~/.cache/huggingface/lerobot/<envgen>`.
 
 ## Finetune (OpenPi)
 Compute normalization stats:
 ```bash
 cd openpi
-uv run scripts/compute_norm_stats.py --config-name pi0_libero_low_mem_finetune --envgen_dataset_repo_id <config.envgen>
+uv run scripts/compute_norm_stats.py --config-name <vla>_libero_<envgen>
 ```
 LoRa SFT:
 ```bash
-XLA_PYTHON_CLIENT_PREALLOCATE=false uv run scripts/train.py pi0_fast_libero_<config.envgen> --exp-name=my_experiment --overwrite
+XLA_PYTHON_CLIENT_PREALLOCATE=false uv run scripts/train.py <vla>_libero_<envgen> --exp-name=my_experiment --overwrite
 ```
 
 ## Finetune (OpenVLA)
@@ -59,8 +59,8 @@ cd openvla_oft
 source .venv/bin/activate
 torchrun --standalone --nnodes 1 --nproc-per-node 1 vla_scripts/finetune.py \
   --vla_path openvla/openvla-7b \
-  --data_root_dir ~/tensorflow_datasets/<config.envgen>/libero_rlds_builder/1.0.0 \
-  --dataset_name libero_rlds_builder \
+  --data_root_dir ~/tensorflow_datasets/<envgen>/libero_spatial_no_noops/1.0.0 \
+  --dataset_name libero_spatial_no_noops \
   --run_root_dir checkpoints \
   --use_l1_regression True \
   --use_diffusion False \
@@ -77,7 +77,7 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 vla_scripts/finetune.py \
   --lora_rank 32 \
   --wandb_entity "YOUR_WANDB_ENTITY" \
   --wandb_project "YOUR_WANDB_PROJECT" \
-  --run_id_note <config.envgen> \
+  --run_id_note <envgen> \
   --grad_accumulation_steps 4
 ```
 
@@ -89,7 +89,7 @@ uv run visualization.py
 Terminal 2:
 ```bash
 cd openpi
-XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES=0 uv run scripts/serve_policy.py --env LIBERO --port 8000 policy:checkpoint --policy.config pi0_fast_libero_cma_mae --policy.dir <your_finetuned_checkpoint>
+XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES=0 uv run scripts/serve_policy.py --env LIBERO --port 8000 policy:checkpoint --policy.config <vla>_libero_<envgen> --policy.dir <your_finetuned_checkpoint>
 ```
 <!-- CUDA_VISIBLE_DEVICES=1 uv run scripts/serve_policy.py --env LIBERO --port 8001 policy:checkpoint --policy.config pi0_fast_libero_cma_mae --policy.dir checkpoints/pi0_fast_libero_envgen/cma_mae/29999 -->
 

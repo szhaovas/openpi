@@ -211,7 +211,11 @@ class TempDataset(Dataset):
         eps_dir.mkdir()
 
         np.savez(
-            eps_dir / "state_proprio_action_embedding.npz",
+            (
+                eps_dir / "state_proprio_action_embedding.npz"
+                if len(trajectory.proprio) > 0
+                else eps_dir / "state_action_embedding.npz"
+            ),
             state=trajectory.state,
             proprio=trajectory.proprio,
             action=trajectory.action,
@@ -312,7 +316,7 @@ class TempDataset(Dataset):
 
     def convert_to_rlds(self, repo_id: str):
         data_dir = Path(get_default_data_dir()) / repo_id
-        builder = LiberoRLDSBuilder(traj_dataset=self, data_dir=data_dir)
+        builder = LiberoSpatialNoNoops(traj_dataset=self, data_dir=data_dir)
         if Path(builder.data_dir).exists():
             logger.warning(f"Overwriting previous {builder.data_dir}...")
             shutil.rmtree(builder.data_dir)
@@ -324,7 +328,7 @@ class TempDataset(Dataset):
         return builder.as_dataset(split="train")
 
 
-class LiberoRLDSBuilder(tfds.core.GeneratorBasedBuilder):
+class LiberoSpatialNoNoops(tfds.core.GeneratorBasedBuilder):
     VERSION = tfds.core.Version("1.0.0")
     RELEASE_NOTES = {
         "1.0.0": "Initial release.",
@@ -347,8 +351,8 @@ class LiberoRLDSBuilder(tfds.core.GeneratorBasedBuilder):
 
     @no_type_check  # suppress pylance false positives on rlds_dataset_features.__getitem__
     def _generate_examples(self):
-        num_noops = 0
         for traj_id, trajectory in enumerate(tqdm(self.traj_dataset)):
+            num_noops = 0
             steps = []
             for step_id, (
                 image,
@@ -368,6 +372,7 @@ class LiberoRLDSBuilder(tfds.core.GeneratorBasedBuilder):
                 # filter out no-ops
                 prev_action = steps[-1]["action"] if len(steps) > 0 else None
                 if is_noop(action, prev_action):
+                    num_noops += 1
                     continue
 
                 is_last = step_id == (len(trajectory.action) - 1)
@@ -408,10 +413,16 @@ class LiberoRLDSBuilder(tfds.core.GeneratorBasedBuilder):
                     }
                 )
 
+            if num_noops > 0:
+                logger.info(
+                    f"Filtered out {num_noops} steps with near-zero actions"
+                )
+
             # TODO: OpenVLA-OFT training pipeline crashes on very short
             # trajectories. For now we skip them since there are very few such
             # trajectories.
             if len(steps) < 10:
+                logger.warning(f"Skipped traj {traj_id} since it is too short")
                 continue
 
             yield traj_id, {
@@ -420,8 +431,6 @@ class LiberoRLDSBuilder(tfds.core.GeneratorBasedBuilder):
                     "file_path": "",  # Dummy, not actually used
                 },
             }
-
-        logger.info(f"Filtered out {num_noops} steps with near-zero actions")
 
 
 def embedding_collate(batch: Iterable[Trajectory]) -> torch.Tensor:

@@ -25,7 +25,7 @@ from sklearn.metrics.pairwise import cosine_distances
 from torchvision import transforms
 from tqdm import tqdm
 
-from src.easy_utils import extract_scheduler_nevals
+from src.easy_utils import extract_scheduler_nevals, update_csv_column
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 if device == "cpu":
@@ -88,9 +88,13 @@ def compute_dino_diversities(log_dir: Path) -> np.ndarray:
 
 
 if __name__ == "__main__":
-    print(
-        compute_dino_diversities(
-            Path("outputs/domain_randomization/2026-04-08_023131")
-            # Path("outputs/cma_mae/2026-04-08_022945")
-        )
+    log_dir = Path("outputs/cma_es/2026-04-14_190728")
+
+    dino = compute_dino_diversities(log_dir)
+
+    update_csv_column(
+        log_dir / "summary.csv",
+        "Avg.EmbDist(DINOv2)",
+        dino.tolist(),
+        Path("summary.csv"),
     )

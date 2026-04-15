@@ -1,5 +1,6 @@
 """Contains util functions with easy dependencies."""
 
+import csv
 import glob
 import importlib
 import pickle as pkl
@@ -7,7 +8,7 @@ import re
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from tqdm import tqdm
 
@@ -92,3 +93,34 @@ def suppress_tqdm():
         yield
     finally:
         tqdm.__init__ = original
+
+
+def update_csv_column(
+    input_csv: Path, column_name: str, values: List, save_to: Path
+) -> None:
+    """Replace an existing column or add a new one in a CSV file."""
+    with open(input_csv) as fin, open(save_to, "w") as fout:
+        input_csv_rows = list(csv.reader(fin))
+        writer = csv.writer(fout)
+
+        header = input_csv_rows[0]
+        data = input_csv_rows[1:]
+        assert len(values) == len(data)
+
+        if column_name in header:
+            col_index = header.index(column_name)
+            is_new_column = False
+        else:
+            col_index = len(header)
+            header += [column_name]
+            is_new_column = True
+
+        writer.writerow(header)
+
+        for row, val in zip(data, values):
+            if is_new_column:
+                row.append(val)
+            else:
+                row[col_index] = val
+
+            writer.writerow(row)

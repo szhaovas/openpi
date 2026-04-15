@@ -8,7 +8,7 @@ hydra:
     dir: ./outputs/${hydra:runtime.choices.envgen}/${now:%Y-%m-%d_%H%M%S}
 
 # for embedding collection
-num_embeddings_each_task: 0
+num_embeddings_each_task: 32
 collect_embeddings_sigma: 0.04
 save_embeddings_to: ${hydra:runtime.output_dir}/embeddings
 
