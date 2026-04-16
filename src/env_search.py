@@ -474,19 +474,23 @@ def main(cfg: DictConfig):
                         solutions=solutions[sol_start:sol_end]
                     )
                 )
+                
+                # An environment on which VLA fails or succeeds 100% is not feasibly adversarial
+                # Only include feasibly adversarial environments in feedback
+                feasibly_adversarial = objective > 0
+                num_feedback = sum(feasibly_adversarial)
+                all_num_feedbacks.append(num_feedback)
+
                 pbar.update(cfg.envgen.emitter.batch_size)
                 pbar.refresh()
                 nevals_since_last_log += cfg.envgen.emitter.batch_size
 
-                all_repaired.extend(repaired)
-                all_objective.extend(objective)
-                all_measures.extend(measures)
-
-                num_feedback = len(repaired)
+                all_repaired.extend(repaired[feasibly_adversarial])
+                all_objective.extend(objective[feasibly_adversarial])
+                all_measures.extend(measures[feasibly_adversarial])
                 all_task_id += [em.task_id] * num_feedback
-                all_num_feedbacks.append(num_feedback)
 
-                for env_rollouts in trajectories:
+                for env_rollouts in np.array(trajectories)[feasibly_adversarial]:
                     all_embedding.append(
                         np.mean(
                             [
@@ -500,10 +504,8 @@ def main(cfg: DictConfig):
                         )
                     )
 
-                # Saves successful trajectories to the temporary dataset if
-                # they come from a challenging yet feasible environment on
-                # which there are some successful and some failed rollouts
-                for env_rollouts in trajectories:
+                # Saves trajectories
+                for env_rollouts in np.array(trajectories)[feasibly_adversarial]:
                     succ_traj_idx = np.full(
                         cfg.eval.task_eval.num_trials_per_sol,
                         -1,
@@ -515,30 +517,29 @@ def main(cfg: DictConfig):
                         dtype=np.int32,
                     )
 
-                    if np.any(
-                        [traj.success for traj in env_rollouts]
-                    ) and np.any([not traj.success for traj in env_rollouts]):
-                        stid, ftid = [], []
-                        for traj in env_rollouts:
-                            if traj.success:
-                                stid.append(
-                                    temp_succ_dataset.write_episode(
-                                        trajectory=traj
-                                    )
+                    stid, ftid = [], []
+                    for traj in env_rollouts:
+                        if traj.success:
+                            stid.append(
+                                temp_succ_dataset.write_episode(
+                                    trajectory=traj
                                 )
-                            else:
-                                ftid.append(
-                                    temp_fail_dataset.write_episode(
-                                        trajectory=traj
-                                    )
+                            )
+                        else:
+                            ftid.append(
+                                temp_fail_dataset.write_episode(
+                                    trajectory=traj
                                 )
+                            )
 
-                        succ_traj_idx[: len(stid)] = stid
-                        fail_traj_idx[: len(ftid)] = ftid
+                    succ_traj_idx[: len(stid)] = stid
+                    fail_traj_idx[: len(ftid)] = ftid
 
                     all_succ_traj_idx.append(succ_traj_idx)
                     all_fail_traj_idx.append(fail_traj_idx)
 
+            # TODO: This might crash when more than 1 emitters are active since 
+            # num_feedbacks might be different for each emitter
             all_repaired = np.array(all_repaired)
             all_objective = np.array(all_objective)
             all_measures = np.array(all_measures)
@@ -551,16 +552,16 @@ def main(cfg: DictConfig):
             # strictly emitted by CMA-ES and are injected into its update.
             injected = edit_dist > 0
             logger.info(
-                f"{np.sum(injected)}/{injected.shape[0]} solutions have been modified by external repair"
+                f"{sum(injected)}/{injected.shape[0]} solutions have been modified by external repair"
             )
             logger.info(f"\nedit_dists={edit_dist}")
 
             scheduler.tell(
                 # Penalize objective with MILP editing distance if there is any
-                np.clip(all_objective - edit_dist, a_min=1e-6, a_max=None),
+                np.clip(all_objective - edit_dist[feasibly_adversarial], a_min=1e-6, a_max=None),
                 all_measures,
                 solution=all_repaired,
-                injected=injected,
+                injected=injected[feasibly_adversarial],
                 task_id=all_task_id,
                 embedding=all_embedding,
                 succ_traj_idx=all_succ_traj_idx,
@@ -572,6 +573,9 @@ def main(cfg: DictConfig):
             archive_data = scheduler.result_archive.data(
                 ["objective", "embedding"]
             )
+            # TODO: Shouldn't need this check if archive only stores feasibly adversarial
+            # environments. We keep this for older archives that store all 
+            # environments
             feasible_env_idx = np.where(archive_data["objective"] > 1e-6)[0]
             num_feasible_envs = len(feasible_env_idx)
 
@@ -655,7 +659,7 @@ def main(cfg: DictConfig):
         f"{len(holdout_env_archive)} environments have been held-out as test set at {logdir / 'holdout_envs.pkl'}"
     )
 
-    # Adds some trajectories from the vanilla libero dataset to prevent forgetting
+    # Adds trajectories from the vanilla libero dataset
     filtered_lerobot_dataset = filter_lerobot_dataset_by_task(
         repo_id="physical-intelligence/libero",
         task_prompts=libero_spatial_prompts[cfg.eval.task_ids],

@@ -1,2 +1,3 @@
-from .evolution_strategy_emitter import EvolutionStrategyEmitterExternal
+from .evolution_strategy_emitter_external import EvolutionStrategyEmitterExternal
 from .fixed_gaussian_emitter import FixedGaussianEmitter
+from .evolution_strategy_emitter import EvolutionStrategyEmitter

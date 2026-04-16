@@ -13,10 +13,11 @@ logging_archive:
   starting_cells: ${oc.mul:2, ${env_search_num_evals}} # 2 * evaluation budget to make sure hashing succeeds
 
 emitter:
-  _target_: ribs.emitters.EvolutionStrategyEmitter
+  _target_: src.myribs.emitters.EvolutionStrategyEmitter
   sigma0: 0.02
   ranker: obj
   restart_rule: basic
+  restart_mode: fixed
   batch_size: 8
   seed: ${seed}
 

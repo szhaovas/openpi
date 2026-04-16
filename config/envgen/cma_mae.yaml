@@ -16,8 +16,9 @@ logging_archive:
 
 emitter:
   # _target_: src.myribs.emitters.EvolutionStrategyEmitterExternal
-  _target_: ribs.emitters.EvolutionStrategyEmitter
+  _target_: src.myribs.emitters.EvolutionStrategyEmitter
   sigma0: 0.02
+  restart_mode: stepping_stone
   batch_size: 8
   seed: ${seed}
 
