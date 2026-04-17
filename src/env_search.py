@@ -9,7 +9,7 @@ import shutil
 from functools import reduce
 from operator import add, mul
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Type
 
 import hydra
 import imageio
@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from dask.distributed import Client, LocalCluster
-from hydra.utils import instantiate
+from hydra.utils import instantiate, get_class
 from omegaconf import DictConfig, OmegaConf
 from ribs.archives import ArchiveBase, CVTArchive, GridArchive
 from ribs.visualize import cvt_archive_heatmap, grid_archive_heatmap
@@ -36,10 +36,7 @@ from src.easy_utils import (
     patch_pkl_load,
     safe_pkl_dump,
 )
-from src.libero_spatial_eval import (
-    get_default_env_params,
-    libero_spatial_prompts,
-)
+from src.eval import LiberoEval
 from src.myribs.archives import LoggingArchive
 
 logger = logging.getLogger(__name__)
@@ -202,6 +199,7 @@ def seed_everything(seed: int):
 
 
 def _collect_embeddings(
+    evaluator: LiberoEval,
     collect_on_tasks: List[int],
     num_collect_for_each_task: Union[int, List[int]],
     sigma: Union[float, List[float]],
@@ -211,6 +209,7 @@ def _collect_embeddings(
     the VLA on each environment for a single time step.
 
     Args:
+        evaluator: An evaluator with which to collect embeddings.
         collect_on_tasks: List of task IDs on which to collect embeddings.
         num_collect_for_each_task: The number of embeddings to collect for each
             task. Can specify a different number for each task.
@@ -222,9 +221,9 @@ def _collect_embeddings(
 
     random_env_params = [
         np.random.normal(
-            loc=get_default_env_params(tid),
+            loc=evaluator.get_default_env_params(tid)[0],
             scale=ts,
-            size=(tn, len(get_default_env_params())),
+            size=(tn, evaluator.get_num_tasks_in_suite()),
         )
         for tid, tn, ts in zip(
             collect_on_tasks,
@@ -233,21 +232,6 @@ def _collect_embeddings(
         )
     ]
     random_env_params = np.vstack(random_env_params)
-
-    evaluator_cfg = hydra.compose(
-        config_name="main",
-        overrides=[
-            "eval=first_timestep",
-        ],
-    ).eval.task_eval
-    evaluators = [
-        instantiate(
-            evaluator_cfg,
-            task_id=tid,
-            dask_client=None,  # Not worth the dask overheads since single step rollouts return quickly
-        )
-        for tid in range(len(libero_spatial_prompts))
-    ]
 
     for randenv, tid in tqdm(
         zip(
@@ -262,7 +246,7 @@ def _collect_embeddings(
         initial=0,
         total=len(random_env_params),
     ):
-        _, _, _, traj, _ = evaluators[tid].evaluate_single(solution=randenv)
+        _, _, _, traj, _ = evaluator.evaluate_single(solution=randenv, task_id=tid)
         assert len(traj) == 1
         embedding_dataset.write_episode(trajectory=traj[0])
 
@@ -282,11 +266,13 @@ def main(cfg: DictConfig):
         temp_succ_dataset = TempDataset(dataset_dir=logdir / "succ_dataset")
         temp_fail_dataset = TempDataset(dataset_dir=logdir / "fail_dataset")
 
+        evaluator_cls: Type[LiberoEval] = get_class(cfg.eval.task_eval._target_)
+
         # QD archive for QD visualization and metrics.
         # In the case of cma-mae, also provides x0 in case of restart.
         qd_archive = instantiate(
             cfg.envgen.qd_archive,
-            solution_dim=len(get_default_env_params()),
+            solution_dim=evaluator_cls.get_default_env_params()[0],
             extra_fields={
                 "task_id": (
                     (),
@@ -311,7 +297,7 @@ def main(cfg: DictConfig):
         # This is needed because QD archive implements elitism and may discard past results if better alternatives are found.
         logging_archive = instantiate(
             cfg.envgen.logging_archive,
-            solution_dim=len(get_default_env_params()),
+            solution_dim=evaluator_cls.get_default_env_params()[0],
             extra_fields={
                 "task_id": (
                     (),
@@ -339,7 +325,7 @@ def main(cfg: DictConfig):
             instantiate(
                 cfg.envgen.emitter,
                 archive=qd_archive,
-                x0=get_default_env_params(tid),
+                x0=evaluator_cls.get_default_env_params(tid)[0],
             )
             for tid in cfg.eval.task_ids
         ]
@@ -355,8 +341,19 @@ def main(cfg: DictConfig):
         )
 
         # Collect some embeddings to train a measure model for latent representations
-        # Not needed by domain randomization itself but still useful for logging and visualization
+        # Non-QD methods only use this for visualization and QD metrics
+        colemb_evaluator_cfg = hydra.compose(
+            config_name="main",
+            overrides=[
+                "eval=first_timestep",
+            ],
+        ).eval.task_eval
+        colemb_evaluator: LiberoEval = instantiate(
+            colemb_evaluator_cfg,
+            dask_client=None,  # Not worth the dask overheads since single step rollouts return quickly
+        )
         _collect_embeddings(
+            evaluator=colemb_evaluator,
             collect_on_tasks=cfg.eval.task_ids,
             num_collect_for_each_task=cfg.num_embeddings_each_task,
             sigma=cfg.collect_embeddings_sigma,
@@ -434,17 +431,11 @@ def main(cfg: DictConfig):
         )
         client = Client(cluster)
 
-    # Each task gets an evaluator.
-    # TODO: Define an evaluator retrieval
-    evaluators = [
-        instantiate(
-            cfg.eval.task_eval,
-            task_id=tid,
-            dask_client=client,
-            measure_model=measure_model,
-        )
-        for tid in range(len(libero_spatial_prompts))
-    ]
+    evaluator: LiberoEval = instantiate(
+        cfg.eval.task_eval,
+        dask_client=client,
+        measure_model=measure_model,
+    )
 
     nevals_since_last_log = 0
     with tqdm(
@@ -470,27 +461,23 @@ def main(cfg: DictConfig):
                 sol_start = eid * cfg.envgen.emitter.batch_size
                 sol_end = sol_start + cfg.envgen.emitter.batch_size
                 repaired, objective, measures, trajectories, edit_dist = (
-                    evaluators[em.task_id].evaluate(
-                        solutions=solutions[sol_start:sol_end]
+                    evaluator.evaluate(
+                        solutions=solutions[sol_start:sol_end], task_id=em.task_id
                     )
                 )
-                
-                # An environment on which VLA fails or succeeds 100% is not feasibly adversarial
-                # Only include feasibly adversarial environments in feedback
-                feasibly_adversarial = objective > 0
-                num_feedback = sum(feasibly_adversarial)
-                all_num_feedbacks.append(num_feedback)
-
                 pbar.update(cfg.envgen.emitter.batch_size)
                 pbar.refresh()
                 nevals_since_last_log += cfg.envgen.emitter.batch_size
 
-                all_repaired.extend(repaired[feasibly_adversarial])
-                all_objective.extend(objective[feasibly_adversarial])
-                all_measures.extend(measures[feasibly_adversarial])
-                all_task_id += [em.task_id] * num_feedback
+                all_repaired.extend(repaired)
+                all_objective.extend(objective)
+                all_measures.extend(measures)
 
-                for env_rollouts in np.array(trajectories)[feasibly_adversarial]:
+                num_feedback = len(repaired)
+                all_task_id += [em.task_id] * num_feedback
+                all_num_feedbacks.append(num_feedback)
+
+                for env_rollouts in trajectories:
                     all_embedding.append(
                         np.mean(
                             [
@@ -504,8 +491,10 @@ def main(cfg: DictConfig):
                         )
                     )
 
-                # Saves trajectories
-                for env_rollouts in np.array(trajectories)[feasibly_adversarial]:
+                # Saves successful trajectories to the temporary dataset if
+                # they come from a challenging yet feasible environment on
+                # which there are some successful and some failed rollouts
+                for env_rollouts in trajectories:
                     succ_traj_idx = np.full(
                         cfg.eval.task_eval.num_trials_per_sol,
                         -1,
@@ -517,23 +506,26 @@ def main(cfg: DictConfig):
                         dtype=np.int32,
                     )
 
-                    stid, ftid = [], []
-                    for traj in env_rollouts:
-                        if traj.success:
-                            stid.append(
-                                temp_succ_dataset.write_episode(
-                                    trajectory=traj
+                    if np.any(
+                        [traj.success for traj in env_rollouts]
+                    ) and np.any([not traj.success for traj in env_rollouts]):
+                        stid, ftid = [], []
+                        for traj in env_rollouts:
+                            if traj.success:
+                                stid.append(
+                                    temp_succ_dataset.write_episode(
+                                        trajectory=traj
+                                    )
                                 )
-                            )
-                        else:
-                            ftid.append(
-                                temp_fail_dataset.write_episode(
-                                    trajectory=traj
+                            else:
+                                ftid.append(
+                                    temp_fail_dataset.write_episode(
+                                        trajectory=traj
+                                    )
                                 )
-                            )
 
-                    succ_traj_idx[: len(stid)] = stid
-                    fail_traj_idx[: len(ftid)] = ftid
+                        succ_traj_idx[: len(stid)] = stid
+                        fail_traj_idx[: len(ftid)] = ftid
 
                     all_succ_traj_idx.append(succ_traj_idx)
                     all_fail_traj_idx.append(fail_traj_idx)
@@ -558,10 +550,10 @@ def main(cfg: DictConfig):
 
             scheduler.tell(
                 # Penalize objective with MILP editing distance if there is any
-                np.clip(all_objective - edit_dist[feasibly_adversarial], a_min=1e-6, a_max=None),
+                np.clip(all_objective - edit_dist, a_min=1e-6, a_max=None),
                 all_measures,
                 solution=all_repaired,
-                injected=injected[feasibly_adversarial],
+                injected=injected,
                 task_id=all_task_id,
                 embedding=all_embedding,
                 succ_traj_idx=all_succ_traj_idx,
@@ -573,9 +565,6 @@ def main(cfg: DictConfig):
             archive_data = scheduler.result_archive.data(
                 ["objective", "embedding"]
             )
-            # TODO: Shouldn't need this check if archive only stores feasibly adversarial
-            # environments. We keep this for older archives that store all 
-            # environments
             feasible_env_idx = np.where(archive_data["objective"] > 1e-6)[0]
             num_feasible_envs = len(feasible_env_idx)
 
@@ -631,11 +620,11 @@ def main(cfg: DictConfig):
                 # Use qd_archive for QD heatmap
                 if scheduler.archive.measure_dim <= 2:
                     save_heatmap(
-                        scheduler.archive, logdir / f"heatmap_{pbar.n:08d}.png"
+                        scheduler.archive, str(logdir / f"heatmap_{pbar.n:08d}.png")
                     )
 
                 _extract_env_images(
-                    logging_archive,
+                    scheduler.result_archive,
                     temp_succ_dataset,
                     logdir / f"env_images_{pbar.n:08d}",
                 )
@@ -662,7 +651,7 @@ def main(cfg: DictConfig):
     # Adds trajectories from the vanilla libero dataset
     filtered_lerobot_dataset = filter_lerobot_dataset_by_task(
         repo_id="physical-intelligence/libero",
-        task_prompts=libero_spatial_prompts[cfg.eval.task_ids],
+        task_prompts=evaluator.get_prompts_in_suite(cfg.eval.task_ids),
     )
     for traj_start, traj_end in tqdm(
         zip(

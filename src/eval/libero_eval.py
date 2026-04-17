@@ -1,9 +1,10 @@
-"""Handles interactions with the LIBERO-Spatial task suite."""
+"""Base evaluator class for LIBERO."""
 
 import collections
 import logging
 import math
 import os
+from abc import ABC, abstractmethod
 from functools import partial
 from typing import Dict, List, Optional, Tuple
 
@@ -19,102 +20,12 @@ from src.vla_client.websocket_client_policy import WebsocketClientPolicy
 
 logger = logging.getLogger(__name__)
 
-benchmark_dict = benchmark.get_benchmark_dict()
-custom_task_suite = benchmark_dict["custom"]()
 
-libero_spatial_prompts = np.array(
-    [
-        "pick up the black bowl between the plate and the ramekin and place it on the plate",
-        "pick up the black bowl next to the ramekin and place it on the plate",
-        "pick up the black bowl from table center and place it on the plate",
-        "pick up the black bowl on the cookie box and place it on the plate",
-        "pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate",
-        "pick up the black bowl on the ramekin and place it on the plate",
-        "pick up the black bowl next to the cookie box and place it on the plate",
-        "pick up the black bowl on the stove and place it on the plate",
-        "pick up the black bowl next to the plate and place it on the plate",
-        "pick up the black bowl on the wooden cabinet and place it on the plate",
-    ]
-)
+class LiberoEval(ABC):
+    task_suite = None
 
-
-def get_default_env_params(task_id=0):
-    # For now ``env_params`` consists of:
-    #   [
-    #       akita_black_bowl_1_x, akita_black_bowl_1_y,
-    #       akita_black_bowl_2_x, akita_black_bowl_2_y,
-    #       cookies_1_x, cookies_1_y,
-    #       glazed_rim_porcelain_ramekin_1_x,
-    #       glazed_rim_porcelain_ramekin_1_y,
-    #       plate_1_x, plate_1_y,
-    #       light_x, light_y, light_z
-    #       camera_x, camera_y, camera_z,
-    #       table_r, table_g, table_b,
-    #       camera_r1, camera_r2, camera_r3,
-    #       light_spec_r, light_spec_g, light_spec_b,
-    #   ]
-    # These starting params are derived from default libero-spatial; make sure
-    # task_order_index=0 when loading benchmark_dict
-    bowl_starting_xy = [
-        [-0.05, 0.20, -0.18, 0.32],
-        [-0.18, 0.32, 0.13, -0.07],
-        [-0.075, 0.0, 0.01, 0.31],
-        [0.07, 0.03, 0.03, -0.27],
-        [0.08, -0.15, 0.03, -0.27],
-        [-0.20, 0.20, 0.07, 0.03],
-        [0.13, -0.07, -0.41, -0.14],
-        [-0.41, -0.14, 0.03, -0.27],
-        [0.01, 0.31, -0.18, 0.32],
-        [0.03, -0.27, -0.41, -0.14],
-    ]
-
-    return bowl_starting_xy[task_id] + [
-        0.07,
-        0.03,
-        -0.20,
-        0.20,
-        0.06,
-        0.20,
-        1.0,
-        1.0,
-        4.0,
-        0.66,
-        0,
-        1.61,
-        0.5,
-        0.5,
-        0.5,
-        0.0,
-        0.0,
-        0.0,
-        0.3,
-        0.3,
-        0.3,
-    ]
-
-
-def _quat2axisangle(quat):
-    """
-    Copied from robosuite: https://github.com/ARISE-Initiative/robosuite/blob/eafb81f54ffc104f905ee48a16bb15f059176ad3/robosuite/utils/transform_utils.py#L490C1-L512C55
-    """
-    # clip quaternion
-    if quat[3] > 1.0:
-        quat[3] = 1.0
-    elif quat[3] < -1.0:
-        quat[3] = -1.0
-
-    den = np.sqrt(1.0 - quat[3] * quat[3])
-    if math.isclose(den, 0.0):
-        # This is (close to) a zero degree rotation, immediately return
-        return np.zeros(3)
-
-    return (quat[:3] * 2.0 * math.acos(quat[3])) / den
-
-
-class LiberoSpatialEval:
     def __init__(
         self,
-        task_id: int,
         objective_func: Optional[str] = "success_rate",
         measure_func: Optional[str] = None,
         num_trials_per_sol: int = 1,
@@ -128,7 +39,8 @@ class LiberoSpatialEval:
         measure_model: Optional[MeasureModel] = None,
         **kwargs,
     ):
-        self.task_id = task_id
+        if self.task_suite is None:
+            raise NotImplementedError
 
         if objective_func not in ["entropy", "success_rate", "adversarial"]:
             raise ValueError(
@@ -170,21 +82,44 @@ class LiberoSpatialEval:
                     f"num_trials_per_sol={self.num_trials_per_sol} exceeds the number of workers {nworkers}"
                 )
 
-        task = custom_task_suite.tasks[self.task_id]
-        self.prompt = task.language
-        self._eval_stub = partial(
-            OffScreenRenderEnv,
-            bddl_file_name=os.path.join(
-                get_libero_path("bddl_files"),
-                task.problem_folder,
-                task.bddl_file,
-            ),
-            repair_config=repair_config,
-            **kwargs,
-        )
+        self._eval_stubs = []
+        suite_benchmark = benchmark.get_benchmark_dict()[self.task_suite]()
+        for task_id in range(self.get_num_tasks_in_suite()):
+            task = suite_benchmark.tasks[task_id]
+            self._eval_stubs.append(
+                partial(
+                    OffScreenRenderEnv,
+                    bddl_file_name=os.path.join(
+                        get_libero_path("bddl_files"),
+                        task.problem_folder,
+                        task.bddl_file,
+                    ),
+                    repair_config=repair_config,
+                    **kwargs,
+                )
+            )
+
+    @staticmethod
+    @abstractmethod
+    def get_default_env_params(task_id: int = 0) -> Tuple[List[float], str]:
+        pass
+
+    @classmethod
+    def get_num_tasks_in_suite(cls) -> int:
+        return benchmark.get_benchmark_dict()[cls.task_suite]().get_num_tasks()
+
+    @classmethod
+    def get_prompts_in_suite(cls, task_ids: Optional[List[int]] = None) -> List[str]:
+        if task_ids is None:
+            return [
+                cls.get_default_env_params(tid)[1]
+                for tid in range(cls.get_num_tasks_in_suite())
+            ]
+        else:
+            return [cls.get_default_env_params(tid)[1] for tid in task_ids]
 
     def evaluate_single(
-        self, solution: np.ndarray
+        self, solution: np.ndarray, task_id: int
     ) -> Tuple[
         np.ndarray, float, NDArray[np.floating], List[Trajectory], np.floating
     ]:
@@ -197,6 +132,7 @@ class LiberoSpatialEval:
         Args:
             solution (np.ndarray): Array of shape (solution_dim,) containing a
                 single solution to be evaluated.
+            task_id (int): Which task to evaluate on.
 
         Returns:
             repaired_solution (np.ndarray): Array of shape (solution_dim,)
@@ -222,7 +158,7 @@ class LiberoSpatialEval:
                 repaired solutions. If no repair was done edit_dist defaults to
                 0.
         """
-        env = self._eval_stub(env_params=solution)
+        env = self._eval_stubs[task_id](env_params=solution)
         obs = env.reset()
         repaired_solution = env.env.env_params.copy()
 
@@ -253,8 +189,8 @@ class LiberoSpatialEval:
                     rollout,
                     env_params=repaired_solution,
                     vla_server_uri=self.vla_server_uris[trial_id],
-                    eval_stub=self._eval_stub,
-                    prompt=self.prompt,
+                    eval_stub=self._eval_stubs[task_id],
+                    prompt=self.get_default_env_params(task_id)[1],
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
                     replan_steps=self.replan_steps,
@@ -273,8 +209,8 @@ class LiberoSpatialEval:
                 succ, traj = rollout(
                     env_params=repaired_solution,
                     vla_server_uri=self.vla_server_uris[0],
-                    eval_stub=self._eval_stub,
-                    prompt=self.prompt,
+                    eval_stub=self._eval_stubs[task_id],
+                    prompt=self.get_default_env_params(task_id)[1],
                     max_steps=self.max_steps,
                     num_steps_wait=self.num_steps_wait,
                     replan_steps=self.replan_steps,
@@ -318,7 +254,7 @@ class LiberoSpatialEval:
         )
 
     def evaluate(
-        self, solutions: np.ndarray
+        self, solutions: np.ndarray, task_id: int
     ) -> Tuple[
         np.ndarray, np.ndarray, np.ndarray, List[List[Trajectory]], np.ndarray
     ]:
@@ -328,6 +264,7 @@ class LiberoSpatialEval:
         Args:
             solutions (np.ndarray): Array of shape (batch_size, solution_dim)
                 containing a batch of solutions to be evaluated.
+            task_id (int): Which task to evaluate on.
 
         Returns:
             repaired_solution (np.ndarray): Repaired solution array of shape
@@ -350,10 +287,10 @@ class LiberoSpatialEval:
         )
         for sol_id, sol in enumerate(solutions):
             logger.info(
-                f"------------------- Evaluating solution {sol_id + 1}/{batch_size} (task_id: {self.task_id})"
+                f"------------------- Evaluating solution {sol_id + 1}/{batch_size} (task_id: {task_id})"
             )
 
-            rep, obj, meas, traj, ed = self.evaluate_single(sol)
+            rep, obj, meas, traj, ed = self.evaluate_single(sol, task_id)
 
             trial_success = [
                 f"trial{tid}: {'success' if tr.success else 'fail'}"
@@ -378,6 +315,24 @@ class LiberoSpatialEval:
             trajectories,
             np.array(edit_dist),
         )
+
+
+def _quat2axisangle(quat):
+    """
+    Copied from robosuite: https://github.com/ARISE-Initiative/robosuite/blob/eafb81f54ffc104f905ee48a16bb15f059176ad3/robosuite/utils/transform_utils.py#L490C1-L512C55
+    """
+    # clip quaternion
+    if quat[3] > 1.0:
+        quat[3] = 1.0
+    elif quat[3] < -1.0:
+        quat[3] = -1.0
+
+    den = np.sqrt(1.0 - quat[3] * quat[3])
+    if math.isclose(den, 0.0):
+        # This is (close to) a zero degree rotation, immediately return
+        return np.zeros(3)
+
+    return (quat[:3] * 2.0 * math.acos(quat[3])) / den
 
 
 def rollout(

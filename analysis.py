@@ -18,7 +18,7 @@ from src.easy_utils import (
     safe_pkl_dump,
 )
 from src.env_search import save_heatmap
-from src.libero_spatial_eval import LiberoSpatialEval, libero_spatial_prompts
+from src.eval import LiberoSpatialEval
 from src.measures import PCAMeasure
 from src.myribs.archives import LoggingArchive
 
@@ -38,21 +38,17 @@ def show_interactive_archive(
     else:
         client = None
 
-    evaluators = [
-        LiberoSpatialEval(
-            task_id=tid,
-            objective_func="success_rate",
-            measure_func=None,
-            num_trials_per_sol=len(vla_server_uris),
-            vla_server_uris=vla_server_uris,
-            dask_client=client,
-            camera_heights=224,
-            camera_widths=224,
-            # replan_steps=1,  # Uncomment when no action chunking
-            repair_config={"time_limit": 1500, "seed": 42},
-        )
-        for tid in range(10)
-    ]
+    evaluator = LiberoSpatialEval(
+        objective_func="success_rate",
+        measure_func=None,
+        num_trials_per_sol=len(vla_server_uris),
+        vla_server_uris=vla_server_uris,
+        dask_client=client,
+        camera_heights=224,
+        camera_widths=224,
+        # replan_steps=1,  # Uncomment when no action chunking
+        repair_config={"time_limit": 1500, "seed": 42},
+    )
 
     fig = plt.figure(figsize=(8, 6))
     grid_archive_heatmap(archive, vmin=0, vmax=1, cmap="viridis")
@@ -65,9 +61,7 @@ def show_interactive_archive(
             print(
                 f"Recorded objective: {data['objective']}; Recorded measures: {data['measures']}"
             )
-            _, objective, _, trajectories, _ = evaluators[
-                data["task_id"]
-            ].evaluate_single(solution=data["solution"])
+            _, objective, _, trajectories, _ = evaluator.evaluate_single(solution=data["solution"], task_id=data["task_id"])
             print(f"Evaluated success rate: {objective}")
 
             for traj in trajectories:
@@ -141,21 +135,17 @@ def host_interactive_archive(
     else:
         client = None
 
-    evaluators = [
-        LiberoSpatialEval(
-            task_id=tid,
-            objective_func="success_rate",
-            measure_func=None,
-            num_trials_per_sol=len(vla_server_uris),
-            vla_server_uris=vla_server_uris,
-            dask_client=client,
-            camera_heights=224,
-            camera_widths=224,
-            # replan_steps=1,  # Uncomment when no action chunking
-            repair_config={"time_limit": 1500, "seed": 42},
-        )
-        for tid in range(10)
-    ]
+    evaluator = LiberoSpatialEval(
+        objective_func="success_rate",
+        measure_func=None,
+        num_trials_per_sol=len(vla_server_uris),
+        vla_server_uris=vla_server_uris,
+        dask_client=client,
+        camera_heights=224,
+        camera_widths=224,
+        # replan_steps=1,  # Uncomment when no action chunking
+        repair_config={"time_limit": 1500, "seed": 42},
+    )
 
     app = Dash(__name__)
 
@@ -188,9 +178,7 @@ def host_interactive_archive(
             print(
                 f"Recorded objective: {data['objective']}; Recorded measures: {data['measures']}"
             )
-            _, objective, _, trajectories, _ = evaluators[
-                data["task_id"]
-            ].evaluate_single(solution=data["solution"])
+            _, objective, _, trajectories, _ = evaluator.evaluate_single(solution=data["solution"], task_id=data["task_id"])
             print(f"Evaluated success rate: {objective}")
 
             for traj in trajectories:
@@ -222,21 +210,17 @@ def success_rates_on_envs(
     else:
         client = None
 
-    evaluators = [
-        LiberoSpatialEval(
-            task_id=tid,
-            objective_func="success_rate",
-            measure_func=None,
-            num_trials_per_sol=len(vla_server_uris),
-            vla_server_uris=vla_server_uris,
-            dask_client=client,
-            camera_heights=224,
-            camera_widths=224,
-            # replan_steps=1,  # Uncomment when no action chunking
-            repair_config={"time_limit": 1500, "seed": 42},
-        )
-        for tid in range(10)
-    ]
+    evaluator = LiberoSpatialEval(
+        objective_func="success_rate",
+        measure_func=None,
+        num_trials_per_sol=len(vla_server_uris),
+        vla_server_uris=vla_server_uris,
+        dask_client=client,
+        camera_heights=224,
+        camera_widths=224,
+        # replan_steps=1,  # Uncomment when no action chunking
+        repair_config={"time_limit": 1500, "seed": 42},
+    )
 
     success_rates_archive = LoggingArchive(
         solution_dim=env_archive.solution_dim,
@@ -254,8 +238,8 @@ def success_rates_on_envs(
 
         rollout_dataset = TempDataset(dataset_dir=logpath / f"env{env_id}")
 
-        _, objective, _, trajectories, _ = evaluators[task_id].evaluate_single(
-            solution=cell["solution"]
+        _, objective, _, trajectories, _ = evaluator.evaluate_single(
+            solution=cell["solution"], task_id=task_id
         )
 
         success_rates_archive.add_single(
@@ -362,7 +346,9 @@ def redraw_heatmap_pca(
 
 
 def tally_traj_by_task(traj_dataset: TempDataset) -> Dict[str, List]:
-    traj_id_by_task = {prompt: [] for prompt in libero_spatial_prompts}
+    traj_id_by_task = {
+        prompt: [] for prompt in LiberoSpatialEval.get_prompts_in_suite()
+    }
     for traj_id, traj in enumerate(tqdm(traj_dataset)):
         assert traj.prompt is not None
         traj_id_by_task[traj.prompt].append(traj_id)
@@ -376,13 +362,13 @@ def success_rates_by_task(success_rates_akv: ArchiveBase) -> List:
     )
     return [
         np.mean(success_rates[task_id == tid])
-        for tid in range(len(libero_spatial_prompts))
+        for tid in range(LiberoSpatialEval.get_num_tasks_in_suite())
     ]
 
 
 if __name__ == "__main__":
     with open(
-        file="results/cma_mae-openvla/holdout_envs.pkl",
+        file="results/domain_randomization-openvla/holdout_envs.pkl",
         mode="rb",
     ) as f:
         with patch_pkl_load():
@@ -398,7 +384,7 @@ if __name__ == "__main__":
                 "10.136.109.136:50800",  # momo 8000
                 # '10.136.109.136:53800', # atlas 8000
             ],
-            "success_rates-domain_randomization-openvla-cma_mae",
+            "success_rates-domain_randomization-openvla-domain_randomization2",
         )
 
     # with open(
@@ -428,7 +414,7 @@ if __name__ == "__main__":
     #     },
     # )
 
-    # for tid in range(len(libero_spatial_prompts)):
+    # for tid in range(LiberoSpatialEval.get_num_tasks_in_suite()):
     #     cma_mae_idx = np.where(cma_mae_test_envs_data["task_id"] == tid)[0]
     #     domain_randomization_idx = np.where(domain_randomization_test_envs_data["task_id"] == tid)[0]
     #     num_test_envs = min(len(cma_mae_idx), len(domain_randomization_idx))
@@ -459,55 +445,3 @@ if __name__ == "__main__":
     # safe_pkl_dump(
     #     sub_test_env_archive, Path("even_combined_adv_test_envs.pkl")
     # )
-
-    # from src.env_search import extract_env_images
-
-    # all_nevals = extract_scheduler_nevals("results/cma_mae-pi05")
-
-    # succ_dataset = TempDataset(Path("results/cma_mae-pi05/succ_dataset"))
-
-    # for filename, nevals in all_nevals.items():
-    #     with open(file=filename, mode="rb") as f:
-    #         env_archive = pkl.load(f).result_archive
-
-    #     extract_env_images(
-    #         env_archive,
-    #         succ_dataset,
-    #         Path("results/cma_mae-pi05") / f"env_images_{nevals:08d}",
-    #     )
-
-    # with open(
-    #     file="success_rates-base-openvla-even/success_rates.pkl",
-    #     mode="rb",
-    # ) as f:
-    #     with patch_pkl_load():
-    #         success_rates = pkl.load(f)
-
-    #     print(np.mean(success_rates_by_task(success_rates)))
-
-    # from sklearn.metrics import pairwise_distances
-
-    # all_nevals = extract_scheduler_nevals(
-    #     # "outputs/domain_randomization/2026-04-08_023131"
-    #     "outputs/cma_mae/2026-04-08_022945"
-    # )
-
-    # all_dists = []
-    # for filename, nevals in all_nevals.items():
-    #     with open(file=filename, mode="rb") as f:
-    #         archive = pkl.load(f).result_archive
-    #         archive_data = archive.data(["objective", "embedding"])
-    #         feasible_env_idx = np.where(archive_data["objective"] > 1e-6)[0]
-
-    #     embeddings = archive_data["embedding"][feasible_env_idx]
-    #     avg_emb_dist = pairwise_distances(
-    #         X=embeddings, metric="euclidean"
-    #     ).sum() / (
-    #         embeddings.shape[0] * (embeddings.shape[0] - 1)
-    #     )  # exclude zeroes along the diagonal
-    #     all_dists.append(avg_emb_dist)
-
-    # all_dists = np.array(all_dists)
-    # all_dists = all_dists[np.argsort(list(all_nevals.values()))]
-
-    # print(all_dists)
