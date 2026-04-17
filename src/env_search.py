@@ -223,7 +223,7 @@ def _collect_embeddings(
         np.random.normal(
             loc=evaluator.get_default_env_params(tid)[0],
             scale=ts,
-            size=(tn, evaluator.get_num_tasks_in_suite()),
+            size=(tn, len(evaluator.get_default_env_params()[0])),
         )
         for tid, tn, ts in zip(
             collect_on_tasks,
@@ -272,7 +272,7 @@ def main(cfg: DictConfig):
         # In the case of cma-mae, also provides x0 in case of restart.
         qd_archive = instantiate(
             cfg.envgen.qd_archive,
-            solution_dim=evaluator_cls.get_default_env_params()[0],
+            solution_dim=len(evaluator_cls.get_default_env_params()[0]),
             extra_fields={
                 "task_id": (
                     (),
@@ -297,7 +297,7 @@ def main(cfg: DictConfig):
         # This is needed because QD archive implements elitism and may discard past results if better alternatives are found.
         logging_archive = instantiate(
             cfg.envgen.logging_archive,
-            solution_dim=evaluator_cls.get_default_env_params()[0],
+            solution_dim=len(evaluator_cls.get_default_env_params()[0]),
             extra_fields={
                 "task_id": (
                     (),
