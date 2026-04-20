@@ -4,11 +4,8 @@ ALGO=$1 # cma_mae or domain_randomization
 VLA_TYPE=$2 # openpi or openvla
 VLA_SERVER_URIs=(
   "0.0.0.0:8000" # space after each uri string
-  "0.0.0.0:8001" # this script assumes ip to be local host
-  "0.0.0.0:8002" 
-  "0.0.0.0:8003" 
 ) # By default, the number of uris sets cfg.eval.task_eval.num_trials_per_sol
-GPU_IDs=(0 0 1 1) # should have the same length as VLA_SERVER_URIs
+GPU_IDs=(0) # should have the same length as VLA_SERVER_URIs
 
 # Check if session exists
 session_name="${ALGO}-${VLA_TYPE}"

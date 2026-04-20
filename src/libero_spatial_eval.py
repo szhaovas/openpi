@@ -178,6 +178,7 @@ class LiberoSpatialEval:
                 task.bddl_file,
             ),
             repair_config=repair_config,
+            robots=["Jaco6DOF"],
             **kwargs,
         )
 
@@ -521,9 +522,10 @@ def rollout(
             (
                 obs["robot0_eef_pos"],
                 _quat2axisangle(obs["robot0_eef_quat"]),
-                obs["robot0_gripper_qpos"],
+                obs["robot0_gripper_qpos"] if len(obs["robot0_gripper_qpos"]) == 2 else [obs["robot0_gripper_qpos"][0], obs["robot0_gripper_qpos"][2]],
             )
         )
+            
 
         if not action_plan:
             element = {
