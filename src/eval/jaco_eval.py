@@ -10,4 +10,4 @@ class JacoEval(LiberoEval):
 
     @staticmethod
     def get_default_env_params(task_id: int = 0) -> Tuple[List[float], str]:
-        raise NotImplementedError
+        return ([0.01, 0.31, -0.18, 0.32, 0.06, 0.20], "pick up the black bowl next to the plate and place it on the plate")

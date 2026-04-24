@@ -9,7 +9,7 @@ import shutil
 from functools import reduce
 from operator import add, mul
 from pathlib import Path
-from typing import List, Optional, Tuple, Union, Type
+from typing import List, Optional, Tuple, Type, Union
 
 import hydra
 import imageio
@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from dask.distributed import Client, LocalCluster
-from hydra.utils import instantiate, get_class
+from hydra.utils import get_class, instantiate
 from omegaconf import DictConfig, OmegaConf
 from ribs.archives import ArchiveBase, CVTArchive, GridArchive
 from ribs.visualize import cvt_archive_heatmap, grid_archive_heatmap
@@ -246,7 +246,9 @@ def _collect_embeddings(
         initial=0,
         total=len(random_env_params),
     ):
-        _, _, _, traj, _ = evaluator.evaluate_single(solution=randenv, task_id=tid)
+        _, _, _, traj, _ = evaluator.evaluate_single(
+            solution=randenv, task_id=tid
+        )
         assert len(traj) == 1
         embedding_dataset.write_episode(trajectory=traj[0])
 
@@ -345,7 +347,9 @@ def main(cfg: DictConfig):
         colemb_evaluator_cfg = hydra.compose(
             config_name="main",
             overrides=[
-                "eval=first_timestep",
+                "eval.task_eval.num_trials_per_sol=1",
+                "eval.task_eval.max_steps=1",
+                "eval.task_eval.measure_func=null",
             ],
         ).eval.task_eval
         colemb_evaluator: LiberoEval = instantiate(
@@ -462,7 +466,8 @@ def main(cfg: DictConfig):
                 sol_end = sol_start + cfg.envgen.emitter.batch_size
                 repaired, objective, measures, trajectories, edit_dist = (
                     evaluator.evaluate(
-                        solutions=solutions[sol_start:sol_end], task_id=em.task_id
+                        solutions=solutions[sol_start:sol_end],
+                        task_id=em.task_id,
                     )
                 )
                 pbar.update(cfg.envgen.emitter.batch_size)
@@ -530,7 +535,7 @@ def main(cfg: DictConfig):
                     all_succ_traj_idx.append(succ_traj_idx)
                     all_fail_traj_idx.append(fail_traj_idx)
 
-            # TODO: This might crash when more than 1 emitters are active since 
+            # TODO: This might crash when more than 1 emitters are active since
             # num_feedbacks might be different for each emitter
             all_repaired = np.array(all_repaired)
             all_objective = np.array(all_objective)
@@ -620,7 +625,8 @@ def main(cfg: DictConfig):
                 # Use qd_archive for QD heatmap
                 if scheduler.archive.measure_dim <= 2:
                     save_heatmap(
-                        scheduler.archive, str(logdir / f"heatmap_{pbar.n:08d}.png")
+                        scheduler.archive,
+                        str(logdir / f"heatmap_{pbar.n:08d}.png"),
                     )
 
                 _extract_env_images(

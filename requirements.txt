@@ -489,7 +489,7 @@ traitlets==5.14.3
     #   nbformat
 transformers==4.21.1
     # via -r requirements.in
-typing-extensions==4.4.0
+typing-extensions==4.15.0
     # via
     #   dash
     #   etils
@@ -539,4 +539,5 @@ xxhash==3.6.0
 jsonlines==4.0.0
 av==16.1.0
 vendi-score==0.0.3
+pygame==2.6.1
 -e libero/

@@ -1,6 +1,6 @@
 defaults:
   - envgen: cma_mae
-  - eval: policy_embedding
+  - eval: libero_spatial
   - _self_
 
 hydra:

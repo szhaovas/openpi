@@ -1,7 +1,0 @@
-defaults:
-  - spread_similarity
-  - measure_model: pca_measure
-  - _self_
-
-task_eval:
-  measure_func: policy_embedding
