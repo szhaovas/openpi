@@ -369,7 +369,7 @@ ribs==0.7.1
     # via -r requirements.in
 robomimic==0.2.0
     # via -r requirements.in
-robosuite @ git+https://github.com/szhaovas/robosuite.git@f691304378876b5045d31540cf3a98892eeea147
+robosuite @ git+https://github.com/szhaovas/robosuite.git@dbc3a67d64a17e28999dbd0cac7b21344643798b
     # via -r requirements.in
 rpds-py==0.30.0
     # via

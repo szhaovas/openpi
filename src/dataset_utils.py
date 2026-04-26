@@ -201,7 +201,7 @@ class TempDataset(Dataset):
         for ep_idx in range(len(self)):
             yield self[ep_idx]
 
-    def write_episode(self, trajectory: Trajectory, fps: int = 10) -> None:
+    def write_episode(self, trajectory: Trajectory, fps: int = 10) -> Optional[int]:
         if trajectory.prompt is None:
             logger.warning("Cannot write empty trajectory")
             return
