@@ -2,7 +2,6 @@ import os
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,6 +11,8 @@ from libero.libero.envs import OffScreenRenderEnv
 from libero.libero import benchmark, get_libero_path
 from src.dataset_utils import TempDataset, Trajectory
 from src.eval.libero_eval import _quat2axisangle
+from src.eval import JacoEval
+from typing import Tuple, Generic, TypeVar
 
 # matplotlib defaults (prevent key clashes)
 plt.rcParams["keymap.quit"].remove("q")
@@ -50,7 +51,7 @@ BTN_ZR = 7
 # ── Control parameters ─────────────────────────────────────────────────
 VEL_TRANSLATE = 0.3
 VEL_ROTATE = 0.15
-DEADZONE = 0.1
+DEADZONE = 0.08
 
 display_width = 224
 display_height = 224
@@ -69,15 +70,30 @@ class GripperState(float, Enum):
     CLOSE = 1
 
     def toggle(self) -> "GripperState":
-        return (
-            GripperState.OPEN
-            if self is GripperState.CLOSE
-            else GripperState.CLOSE
-        )
+        return GripperState.OPEN if self is GripperState.CLOSE else GripperState.CLOSE
+    
+
+Toggleable = TypeVar("Toggleable", ControlMode, GripperState)
+class DebounceToggler(Generic[Toggleable]):
+    def __init__(self, initial: Toggleable, cooldown: float=0.5):
+        self._value = initial
+        self._cooldown = cooldown
+        self._last_toggle = 0.0
+
+    @property
+    def value(self) -> Toggleable:
+        return self._value
+
+    def try_toggle(self):
+        now = time.monotonic()
+
+        if now - self._last_toggle >= self._cooldown:
+            self._value = self._value.toggle()
+            self._last_toggle = now
 
 
-control_mode: ControlMode = ControlMode.TRA
-gripper_state: GripperState = GripperState.OPEN
+control_mode = DebounceToggler(initial=ControlMode.TRA)
+gripper_state = DebounceToggler(initial=GripperState.OPEN)
 
 
 def axis(i) -> float:
@@ -86,8 +102,7 @@ def axis(i) -> float:
     return v if abs(v) > DEADZONE else 0.0
 
 
-def get_controller_inputs() -> Tuple[np.ndarray, bool, Tuple[bool, bool]]:
-    """Generate 10-float action vector from controller input."""
+def get_controller_inputs() -> Tuple[np.ndarray, bool, Tuple[bool]]:
     global control_mode, gripper_state
 
     pygame.event.pump()
@@ -95,41 +110,38 @@ def get_controller_inputs() -> Tuple[np.ndarray, bool, Tuple[bool, bool]]:
     dx = dy = dz = 0.0
     droll = dpitch = dyaw = 0.0
 
-    # Translation control mode: left stick for dx dy, right stick for dz
-    if control_mode == ControlMode.TRA:
-        dx = VEL_TRANSLATE * (axis(AX_LY))
-        dy = VEL_TRANSLATE * (-axis(AX_LX))
-        dz = VEL_TRANSLATE * (-axis(AX_RY))
+    if control_mode.value == ControlMode.TRA:
+        dx = (
+            VEL_TRANSLATE * (-axis(AX_LX))
+        )
+        dy = (
+            VEL_TRANSLATE * (-axis(AX_LY))
+        )
+        dz = (
+            VEL_TRANSLATE * (-axis(AX_RY))
+        )
 
-    # Rotation control mode: left stick for droll dpitch; right stick for dyaw
-    elif control_mode == ControlMode.ROT:
-        droll = VEL_ROTATE * axis(AX_LX)
-        dpitch = VEL_ROTATE * (-axis(AX_LY))
-        dyaw = VEL_ROTATE * (axis(AX_RX))
+    elif control_mode.value == ControlMode.ROT:
+        droll = (
+            VEL_ROTATE * axis(AX_RX)
+        )
+        dpitch = (
+            VEL_ROTATE * (-axis(AX_LY))
+        )
+        dyaw = (
+            VEL_ROTATE * (axis(AX_LX))
+        )
 
-    debounce = False
-
-    # R shoulder for toggling gripper state
     if js.get_button(BTN_ZR):
-        gripper_state = gripper_state.toggle()
-        debounce = True
+        gripper_state.try_toggle()
 
-    # L shoulder for toggling control mode
     if js.get_button(BTN_ZL):
-        control_mode = control_mode.toggle()
-        debounce = True
-
-    if debounce:
-        time.sleep(0.3)
+        control_mode.try_toggle()
 
     return (
-        np.array(
-            [dx, dy, dz, droll, dpitch, dyaw, gripper_state], dtype=np.float32
-        ),
-        # R for No-op (e.g. when waiting for gripper to toggle)
+        np.array([dx, dy, dz, droll, dpitch, dyaw, gripper_state.value], dtype=np.float32),
         js.get_button(BTN_R),
-        # + for starting episode; - for discarding episode
-        (js.get_button(BTN_PLUS), js.get_button(BTN_MINUS)),
+        (js.get_button(BTN_PLUS), js.get_button(BTN_MINUS))
     )
 
 
@@ -140,16 +152,17 @@ def print_controls():
     print("=" * 60)
     print("Left Shoulder  → Toggle Control Mode")
     print("Right Shoulder → Toggle Gripper State")
+    print("       R       → No-op Step")
     print()
     print("Translation Control Mode:")
-    print("  Left Stick ↑↓  → Forward/Backward")
-    print("  Left Stick ←→  → Left/Right")
+    print("  Left Stick ↑↓  → Left/Right")
+    print("  Left Stick ←→  → Forward/Backward")
     print("  Right Stick ↑↓ → Up/Down")
     print()
     print("Rotation Control Mode:")
-    print("  Left Stick ←→  → Roll Left/Right")
+    print("  Left Stick ←→  → Yaw Left/Right")
     print("  Left Stick ↑↓  → Pitch Up/Down")
-    print("  Right Stick ←→ → Yaw Left/Right")
+    print("  Right Stick ←→ → Roll Left/Right")
     print()
     print("+ Button      → Start Episode")
     print("- Button      → Abort Episode")
@@ -157,7 +170,7 @@ def print_controls():
     print("=" * 60)
 
 
-def collect_on_env(env_params: np.ndarray, num_collect: int, logdir: str):
+def collect_on_env(task_id: int, num_collect: int, logdir: str):
     global control_mode, gripper_state
 
     print_controls()
@@ -165,9 +178,8 @@ def collect_on_env(env_params: np.ndarray, num_collect: int, logdir: str):
     # create a jaco custom environment
     benchmark_dict = benchmark.get_benchmark_dict()
     custom_task_suite = benchmark_dict["custom"]()
-    task = custom_task_suite.tasks[0]
+    task = custom_task_suite.tasks[task_id]
     env = OffScreenRenderEnv(
-        env_params=env_params,
         bddl_file_name=os.path.join(
             get_libero_path("bddl_files"), task.problem_folder, task.bddl_file
         ),
@@ -177,14 +189,10 @@ def collect_on_env(env_params: np.ndarray, num_collect: int, logdir: str):
 
     # lpane for overhead camera; rpane for wrist camera
     plt.ion()
-    _, ax = plt.subplots(1, 2)
-    overhead_display = ax[0].imshow(
-        np.zeros((display_height, display_width, 3), dtype=np.uint8)
-    )
+    fig, ax = plt.subplots(1, 2)
+    overhead_display = ax[0].imshow(np.zeros((display_height, display_width, 3), dtype=np.uint8))
     ax[0].axis("off")
-    wrist_display = ax[1].imshow(
-        np.zeros((display_height, display_width, 3), dtype=np.uint8)
-    )
+    wrist_display = ax[1].imshow(np.zeros((display_height, display_width, 3), dtype=np.uint8))
     ax[1].axis("off")
 
     trajectory_dataset = TempDataset(Path(logdir))
@@ -195,21 +203,17 @@ def collect_on_env(env_params: np.ndarray, num_collect: int, logdir: str):
 
         _, _, (wants_start, wants_discard) = get_controller_inputs()
         while not wants_start:
-            overhead_display.set_data(
-                np.zeros((display_height, display_width, 3), dtype=np.uint8)
-            )
-            wrist_display.set_data(
-                np.zeros((display_height, display_width, 3), dtype=np.uint8)
-            )
+            overhead_display.set_data(np.zeros((display_height, display_width, 3), dtype=np.uint8))
+            wrist_display.set_data(np.zeros((display_height, display_width, 3), dtype=np.uint8))
             plt.pause(0.001)
-            time.sleep(0.1)
             _, _, (wants_start, wants_discard) = get_controller_inputs()
             if wants_discard:
+                plt.close(fig)
                 return
-
+            
         # set default control mode and gripper state
-        control_mode = ControlMode.TRA
-        gripper_state = GripperState.OPEN
+        control_mode = DebounceToggler(initial=ControlMode.TRA)
+        gripper_state = DebounceToggler(initial=GripperState.OPEN)
 
         step_count = 0
         trajectory = Trajectory(prompt=task.language, success=True)
@@ -235,46 +239,46 @@ def collect_on_env(env_params: np.ndarray, num_collect: int, logdir: str):
                 break
 
             print(
-                f"\rStep {step_count:3d} | Action: "
-                + " | ".join(f"{a:+.02f}" for a in action)
-                + f" | {control_mode}",
+                f"\rTask {task_id}" + f" | Step {step_count:3d} | Action: "
+                + " | ".join(f"{a:+.02f}" for a in action) 
+                + f" | {control_mode.value}",
                 end="",
                 flush=True,
             )
             if np.all(action[:6] == 0) and not noop:
-                time.sleep(0.02)
                 continue
 
             trajectory.image.append(img)
             trajectory.wrist_image.append(wrist_img)
-            trajectory.state.append(
-                np.concatenate(
-                    (
-                        obs["robot0_eef_pos"],
-                        _quat2axisangle(obs["robot0_eef_quat"]),
-                        obs["robot0_gripper_qpos"],
-                    )
+            trajectory.state.append(np.concatenate(
+                (
+                    obs["robot0_eef_pos"],
+                    _quat2axisangle(obs["robot0_eef_quat"]),
+                    obs["robot0_gripper_qpos"],
                 )
-            )
+            ))
             trajectory.proprio.append(obs["robot0_joint_pos"])
             trajectory.action.append(action)
 
             obs, _, done, _ = env.step(action.tolist())
             step_count += 1
-
+            
             if step_count >= 1000:
-                print("\nEpisode aborted by exceeding max steps 1000")
+                print(f"\nEpisode aborted by exceeding max steps 1000")
                 break
-
+            
             if done:
                 trajectory_dataset.write_episode(trajectory)
                 print(f"\nEpisode saved to {logdir} (step {step_count})")
                 break
+        
+    plt.close(fig)
 
 
 if __name__ == "__main__":
-    collect_on_env(
-        env_params=np.array([0.01, 0.31, -0.18, 0.32, 0.06, 0.20]),
-        num_collect=3,
-        logdir="testtest",
-    )
+    for task_id in range(JacoEval.get_num_tasks_in_suite()):
+        collect_on_env(
+            task_id=task_id,
+            num_collect=2,
+            logdir=f"jaco_custom_task_{task_id}",
+        )
