@@ -132,6 +132,9 @@ class Trajectory:
     action: List[np.ndarray] = field(default_factory=list)
     embedding: List[np.ndarray] = field(default_factory=list)
 
+    def __len__(self) -> int:
+        return len(self.action)
+
 
 class TempDataset(Dataset):
     def __init__(self, dataset_dir: Path) -> None:
@@ -242,13 +245,14 @@ class TempDataset(Dataset):
 
         return traj_id
 
-    def convert_to_lerobot(self, repo_id: str) -> LeRobotDataset:
+    def convert_to_lerobot(self, repo_id: str, downsample_stride:int = 1) -> LeRobotDataset:
         """Converts this dataset to LeRobot format suitable for openpi finetuning
 
         Args:
             repo_id: The repo ID that determines where the output dataset
                 will be saved. By default, the save location will be
                 ``HF_LEROBOT_HOME / repo_id``
+            downsample_stride: Skip step interval when exporting dataset.
 
 
         Returns:
@@ -272,41 +276,42 @@ class TempDataset(Dataset):
 
         for trajectory in tqdm(self):
             with suppress_tqdm():
-                for image, wrist_image, state, action in zip(
+                for i, (image, wrist_image, state, action) in enumerate(zip(
                     trajectory.image,
                     trajectory.wrist_image,
                     trajectory.state,
                     trajectory.action,
-                ):
-                    dataset.add_frame(
-                        frame={
-                            "image": resize_with_pad(
-                                image,
-                                height=lerobot_dataset_features["image"][
-                                    "shape"
-                                ][0],
-                                width=lerobot_dataset_features["image"][
-                                    "shape"
-                                ][1],
-                            ),
-                            "wrist_image": resize_with_pad(
-                                wrist_image,
-                                height=lerobot_dataset_features["wrist_image"][
-                                    "shape"
-                                ][0],
-                                width=lerobot_dataset_features["wrist_image"][
-                                    "shape"
-                                ][1],
-                            ),
-                            "state": state.astype(
-                                lerobot_dataset_features["state"]["dtype"]
-                            ),
-                            "actions": action.astype(
-                                lerobot_dataset_features["state"]["dtype"]
-                            ),
-                        },
-                        task=trajectory.prompt,
-                    )
+                )):
+                    if i == 0 or i % downsample_stride == 0 or i == (len(trajectory) - 1):
+                        dataset.add_frame(
+                            frame={
+                                "image": resize_with_pad(
+                                    image,
+                                    height=lerobot_dataset_features["image"][
+                                        "shape"
+                                    ][0],
+                                    width=lerobot_dataset_features["image"][
+                                        "shape"
+                                    ][1],
+                                ),
+                                "wrist_image": resize_with_pad(
+                                    wrist_image,
+                                    height=lerobot_dataset_features["wrist_image"][
+                                        "shape"
+                                    ][0],
+                                    width=lerobot_dataset_features["wrist_image"][
+                                        "shape"
+                                    ][1],
+                                ),
+                                "state": state.astype(
+                                    lerobot_dataset_features["state"]["dtype"]
+                                ),
+                                "actions": action.astype(
+                                    lerobot_dataset_features["state"]["dtype"]
+                                ),
+                            },
+                            task=trajectory.prompt,
+                        )
 
                 dataset.save_episode()
 
@@ -314,9 +319,9 @@ class TempDataset(Dataset):
 
         return dataset
 
-    def convert_to_rlds(self, repo_id: str):
+    def convert_to_rlds(self, repo_id: str, downsample_stride: int = 1):
         data_dir = Path(get_default_data_dir()) / repo_id
-        builder = LiberoSpatialNoNoops(traj_dataset=self, data_dir=data_dir)
+        builder = LiberoSpatialNoNoops(traj_dataset=self, data_dir=data_dir, downsample_stride=downsample_stride)
         if Path(builder.data_dir).exists():
             logger.warning(f"Overwriting previous {builder.data_dir}...")
             shutil.rmtree(builder.data_dir)
@@ -334,9 +339,10 @@ class LiberoSpatialNoNoops(tfds.core.GeneratorBasedBuilder):
         "1.0.0": "Initial release.",
     }
 
-    def __init__(self, traj_dataset: TempDataset, *args, **kwargs):
+    def __init__(self, traj_dataset: TempDataset, downsample_stride: int, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.traj_dataset = traj_dataset
+        self.downsample_stride = downsample_stride
 
     def _info(self):
         return tfds.core.DatasetInfo(
@@ -375,43 +381,44 @@ class LiberoSpatialNoNoops(tfds.core.GeneratorBasedBuilder):
                     num_noops += 1
                     continue
 
-                is_last = step_id == (len(trajectory.action) - 1)
+                is_last = step_id == (len(trajectory) - 1)
 
-                steps.append(
-                    {
-                        "observation": {
-                            "image": resize_with_pad(
-                                image,
-                                height=rlds_dataset_features["steps"][
-                                    "observation"
-                                ]["image"].shape[0],
-                                width=rlds_dataset_features["steps"][
-                                    "observation"
-                                ]["image"].shape[1],
-                            ),  # No need to flip here since we already flipped when collecting from libero
-                            "wrist_image": resize_with_pad(
-                                wrist_image,
-                                height=rlds_dataset_features["steps"][
-                                    "observation"
-                                ]["wrist_image"].shape[0],
-                                width=rlds_dataset_features["steps"][
-                                    "observation"
-                                ]["wrist_image"].shape[1],
-                            ),  # No need to flip here since we already flipped when collecting from libero
-                            "state": state.astype(np.float32),
-                            "joint_state": proprio.astype(np.float32),
-                        },
-                        "action": action.astype(np.float32),
-                        "discount": 1.0,
-                        "reward": float(
-                            is_last
-                        ),  # Assumes all trajectories in dataset are successful
-                        "is_first": step_id == 0,
-                        "is_last": is_last,
-                        "is_terminal": is_last,
-                        "language_instruction": trajectory.prompt,
-                    }
-                )
+                if step_id == 0 or step_id % self.downsample_stride == 0 or is_last:
+                    steps.append(
+                        {
+                            "observation": {
+                                "image": resize_with_pad(
+                                    image,
+                                    height=rlds_dataset_features["steps"][
+                                        "observation"
+                                    ]["image"].shape[0],
+                                    width=rlds_dataset_features["steps"][
+                                        "observation"
+                                    ]["image"].shape[1],
+                                ),  # No need to flip here since we already flipped when collecting from libero
+                                "wrist_image": resize_with_pad(
+                                    wrist_image,
+                                    height=rlds_dataset_features["steps"][
+                                        "observation"
+                                    ]["wrist_image"].shape[0],
+                                    width=rlds_dataset_features["steps"][
+                                        "observation"
+                                    ]["wrist_image"].shape[1],
+                                ),  # No need to flip here since we already flipped when collecting from libero
+                                "state": state.astype(np.float32),
+                                "joint_state": proprio.astype(np.float32),
+                            },
+                            "action": action.astype(np.float32),
+                            "discount": 1.0,
+                            "reward": float(
+                                is_last
+                            ),  # Assumes all trajectories in dataset are successful
+                            "is_first": step_id == 0,
+                            "is_last": is_last,
+                            "is_terminal": is_last,
+                            "language_instruction": trajectory.prompt,
+                        }
+                    )
 
             if num_noops > 0:
                 logger.info(
