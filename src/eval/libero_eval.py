@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 
 from libero.libero import benchmark, get_libero_path
 from src.dataset_utils import Trajectory
+from src.easy_utils import quat2axisangle
 from src.measures import MeasureModel
 from src.vla_client.websocket_client_policy import WebsocketClientPolicy
 
@@ -317,24 +318,6 @@ class LiberoEval(ABC):
         )
 
 
-def _quat2axisangle(quat):
-    """
-    Copied from robosuite: https://github.com/ARISE-Initiative/robosuite/blob/eafb81f54ffc104f905ee48a16bb15f059176ad3/robosuite/utils/transform_utils.py#L490C1-L512C55
-    """
-    # clip quaternion
-    if quat[3] > 1.0:
-        quat[3] = 1.0
-    elif quat[3] < -1.0:
-        quat[3] = -1.0
-
-    den = np.sqrt(1.0 - quat[3] * quat[3])
-    if math.isclose(den, 0.0):
-        # This is (close to) a zero degree rotation, immediately return
-        return np.zeros(3)
-
-    return (quat[:3] * 2.0 * math.acos(quat[3])) / den
-
-
 def rollout(
     env_params: np.ndarray,
     vla_server_uri: str,
@@ -408,7 +391,7 @@ def rollout(
         state = np.concatenate(
             (
                 obs["robot0_eef_pos"],
-                _quat2axisangle(obs["robot0_eef_quat"]),
+                quat2axisangle(obs["robot0_eef_quat"]),
                 obs["robot0_gripper_qpos"],
             )
         )

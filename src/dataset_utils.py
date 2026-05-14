@@ -1,6 +1,7 @@
 """Manages storage and retrieval of rollout trajectories. Also handles exportation
 to LeRobot and RLDS formats."""
 
+import copy
 import glob
 import logging
 import shutil
@@ -23,7 +24,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from src.easy_utils import suppress_tqdm
+from src.easy_utils import quat2axisangle, suppress_tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +246,7 @@ class TempDataset(Dataset):
 
         return traj_id
 
-    def convert_to_lerobot(self, repo_id: str, downsample_stride:int = 1) -> LeRobotDataset:
+    def convert_to_lerobot(self, repo_id: str, downsample_stride: int = 1) -> LeRobotDataset:
         """Converts this dataset to LeRobot format suitable for openpi finetuning
 
         Args:
@@ -275,14 +276,27 @@ class TempDataset(Dataset):
         )
 
         for trajectory in tqdm(self):
+            num_noops = 0
+            prev_action = None
             with suppress_tqdm():
-                for i, (image, wrist_image, state, action) in enumerate(zip(
-                    trajectory.image,
-                    trajectory.wrist_image,
-                    trajectory.state,
-                    trajectory.action,
-                )):
-                    if i == 0 or i % downsample_stride == 0 or i == (len(trajectory) - 1):
+                for i, (image, wrist_image, state, action) in enumerate(
+                    zip(
+                        trajectory.image,
+                        trajectory.wrist_image,
+                        trajectory.state,
+                        trajectory.action,
+                    )
+                ):
+                    if is_noop(action, prev_action):
+                        num_noops += 1
+                        continue
+                    prev_action = action
+
+                    if (
+                        i == 0
+                        or i % downsample_stride == 0
+                        or i == (len(trajectory) - 1)
+                    ):
                         dataset.add_frame(
                             frame={
                                 "image": resize_with_pad(
@@ -296,22 +310,27 @@ class TempDataset(Dataset):
                                 ),
                                 "wrist_image": resize_with_pad(
                                     wrist_image,
-                                    height=lerobot_dataset_features["wrist_image"][
-                                        "shape"
-                                    ][0],
-                                    width=lerobot_dataset_features["wrist_image"][
-                                        "shape"
-                                    ][1],
+                                    height=lerobot_dataset_features[
+                                        "wrist_image"
+                                    ]["shape"][0],
+                                    width=lerobot_dataset_features[
+                                        "wrist_image"
+                                    ]["shape"][1],
                                 ),
                                 "state": state.astype(
                                     lerobot_dataset_features["state"]["dtype"]
                                 ),
                                 "actions": action.astype(
-                                    lerobot_dataset_features["state"]["dtype"]
+                                    lerobot_dataset_features["actions"]["dtype"]
                                 ),
                             },
                             task=trajectory.prompt,
                         )
+
+                if num_noops > 0:
+                    logger.info(
+                        f"Filtered out {num_noops} steps with near-zero actions"
+                    )
 
                 dataset.save_episode()
 
@@ -574,3 +593,32 @@ def _resize_with_pad_pil(
     zero_image.paste(resized_image, (pad_width, pad_height))
     assert zero_image.size == (width, height)
     return zero_image
+
+
+def jaco_real2sim_state_conversion(
+    real_traj: Trajectory,
+) -> Trajectory:
+    state_arr = np.asarray(real_traj.state)
+    assert state_arr.shape[1] == 8
+    new_state_arr = np.zeros((len(real_traj), 10), dtype=float)
+
+    # copy EEF translation
+    new_state_arr[:, :3] = state_arr[:, :3]
+
+    # convert EEF quaternions(real) to axis angles(sim)
+    new_state_arr[:, 3:6] = np.apply_along_axis(
+        quat2axisangle, axis=1, arr=state_arr[:, 3:7]
+    )
+
+    # expand unary gripper state to four finger joints
+    open_gripper_state = np.array([1.51, 0.93, 1.51, 0.93])
+    close_gripper_state = np.array([0.02, -0.83, 0.02, -0.83])
+    gripper_state_range = open_gripper_state - close_gripper_state
+    new_state_arr[:, 6:10] = (
+        close_gripper_state + state_arr[:, 7][:, None] * gripper_state_range
+    )
+
+    new_traj = copy.deepcopy(real_traj)
+    new_traj.state = new_state_arr
+
+    return new_traj

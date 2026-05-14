@@ -10,7 +10,7 @@ from libero.libero.envs import OffScreenRenderEnv
 
 from libero.libero import benchmark, get_libero_path
 from src.dataset_utils import TempDataset, Trajectory
-from src.eval.libero_eval import _quat2axisangle
+from src.easy_utils import quat2axisangle
 from src.eval import JacoEval
 from typing import Tuple, Generic, TypeVar
 
@@ -102,7 +102,7 @@ def axis(i) -> float:
     return v if abs(v) > DEADZONE else 0.0
 
 
-def get_controller_inputs() -> Tuple[np.ndarray, bool, Tuple[bool]]:
+def get_controller_inputs() -> Tuple[np.ndarray, bool, Tuple[bool, bool]]:
     global control_mode, gripper_state
 
     pygame.event.pump()
@@ -111,26 +111,14 @@ def get_controller_inputs() -> Tuple[np.ndarray, bool, Tuple[bool]]:
     droll = dpitch = dyaw = 0.0
 
     if control_mode.value == ControlMode.TRA:
-        dx = (
-            VEL_TRANSLATE * (-axis(AX_LX))
-        )
-        dy = (
-            VEL_TRANSLATE * (-axis(AX_LY))
-        )
-        dz = (
-            VEL_TRANSLATE * (-axis(AX_RY))
-        )
+        dx = VEL_TRANSLATE * (-axis(AX_LX))
+        dy = VEL_TRANSLATE * (-axis(AX_LY))
+        dz = VEL_TRANSLATE * (-axis(AX_RY))
 
     elif control_mode.value == ControlMode.ROT:
-        droll = (
-            VEL_ROTATE * axis(AX_RX)
-        )
-        dpitch = (
-            VEL_ROTATE * (-axis(AX_LY))
-        )
-        dyaw = (
-            VEL_ROTATE * (axis(AX_LX))
-        )
+        droll = VEL_ROTATE * axis(AX_RX)
+        dpitch = VEL_ROTATE * (-axis(AX_LY))
+        dyaw = VEL_ROTATE * (axis(AX_LX))
 
     if js.get_button(BTN_ZR):
         gripper_state.try_toggle()
@@ -253,7 +241,7 @@ def collect_on_env(task_id: int, num_collect: int, logdir: str):
             trajectory.state.append(np.concatenate(
                 (
                     obs["robot0_eef_pos"],
-                    _quat2axisangle(obs["robot0_eef_quat"]),
+                    quat2axisangle(obs["robot0_eef_quat"]),
                     obs["robot0_gripper_qpos"],
                 )
             ))
